@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import '../../services/order_service.dart';
-import '../../models/order.dart';
 import 'order_view_page.dart'; // หน้าแสดงรายละเอียดคำสั่งซื้อ
 
 class OrderSuccessPage extends StatelessWidget {
