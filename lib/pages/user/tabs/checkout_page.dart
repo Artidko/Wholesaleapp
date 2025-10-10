@@ -2,10 +2,17 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:provider/provider.dart';
 
 import '../../../services/user_settings_service.dart';
 import '../../../models/address_item.dart';
 import '../../../models/payment_method_item.dart';
+
+// สร้างออเดอร์ + ใช้ตะกร้า
+import '../../../providers/cart_provider.dart';
+import '../../../services/order_service.dart';
+// ⬇️ ใช้หน้ารายละเอียดออเดอร์ที่ถูกต้อง
+import '../../widgets/order_view_page.dart';
 
 class CheckoutPage extends StatefulWidget {
   const CheckoutPage({super.key});
@@ -18,12 +25,13 @@ class _CheckoutPageState extends State<CheckoutPage> {
   AddressItem? _selectedAddress;
   PaymentMethodItem? _selectedPayment;
 
+  bool _submitting = false;
   bool get _isSignedIn => FirebaseAuth.instance.currentUser != null;
 
   @override
   void initState() {
     super.initState();
-    // seed วิธีชำระเงินแบบ Global (payment_methods) ถ้ายังไม่มี
+    // seed วิธีชำระเงิน global ถ้ายังไม่มี
     UserSettingsService.instance.ensureGlobalPaymentMethods();
   }
 
@@ -54,6 +62,9 @@ class _CheckoutPageState extends State<CheckoutPage> {
       );
     }
 
+    final canSubmit =
+        _selectedAddress != null && _selectedPayment != null && !_submitting;
+
     return Scaffold(
       appBar: AppBar(title: const Text('เช็คเอาต์')),
       body: ListView(
@@ -70,16 +81,19 @@ class _CheckoutPageState extends State<CheckoutPage> {
           ),
           const SizedBox(height: 24),
           FilledButton.icon(
-            onPressed: (_selectedAddress != null && _selectedPayment != null)
-                ? () {
-                    Navigator.pop(context, {
-                      'address': _selectedAddress,
-                      'payment': _selectedPayment,
-                    });
-                  }
-                : null,
-            icon: const Icon(Icons.check_circle),
-            label: const Text('ยืนยันการสั่งซื้อ'),
+            onPressed: canSubmit ? _submit : null,
+            icon: _submitting
+                ? const SizedBox(
+                    height: 18,
+                    width: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.check_circle),
+            label: Text(
+              _submitting
+                  ? 'กำลังสร้างออเดอร์...'
+                  : 'ยืนยันชำระเงินและสร้างออเดอร์',
+            ),
           ),
           const SizedBox(height: 12),
           if (_selectedAddress == null || _selectedPayment == null)
@@ -90,6 +104,60 @@ class _CheckoutPageState extends State<CheckoutPage> {
         ],
       ),
     );
+  }
+
+  Future<void> _submit() async {
+    if (_selectedAddress == null || _selectedPayment == null) return;
+
+    setState(() => _submitting = true);
+    try {
+      final cart = context.read<CartProvider>();
+
+      // สรุปที่อยู่
+      final a = _selectedAddress!;
+      final addressText = '${a.fullName}\n'
+          '${a.line1}${a.line2.isNotEmpty ? '\n${a.line2}' : ''}\n'
+          '${a.city} ${a.zip}';
+
+      // สรุปวิธีชำระ
+      final p = _selectedPayment!;
+      String paymentDetail;
+      switch (p.type) {
+        case PaymentType.cod:
+          paymentDetail = 'ชำระปลายทาง';
+          break;
+        case PaymentType.promptpay:
+          paymentDetail = 'พร้อมเพย์: ${p.promptPayId ?? '-'}';
+          break;
+        default:
+          paymentDetail = '';
+      }
+      final paymentText =
+          '${p.label}${paymentDetail.isNotEmpty ? ' • $paymentDetail' : ''}';
+
+      // สร้างออเดอร์ (Service จะ clear cart ให้อยู่แล้ว)
+      final orderId = await OrderService.instance.createOrderFromCart(
+        cart: cart,
+        addressText: addressText,
+        paymentText: paymentText,
+        shippingFee: 0,
+        markPaid: true,
+      );
+
+      if (!mounted) return;
+
+      // ไปหน้าแสดงรายละเอียดออเดอร์เลย เพื่อลดโอกาส crash ระหว่างทาง
+      await Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => OrderViewPage(orderId: orderId)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('สร้างออเดอร์ไม่สำเร็จ: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
   }
 }
 
@@ -130,7 +198,7 @@ class _AddressSection extends StatelessWidget {
 
           final selected = _pickInitialAddress(items, initial);
 
-          // ✅ แจ้ง parent เฉพาะ "ครั้งแรก" เท่านั้น กันลูป setState
+          // แจ้ง parent ครั้งแรกเท่านั้น
           if (initial == null) {
             WidgetsBinding.instance
                 .addPostFrameCallback((_) => onPick(selected));
@@ -169,9 +237,8 @@ class _AddressSection extends StatelessWidget {
           title: 'เลือกที่อยู่จัดส่ง',
           items: items,
           itemBuilder: (a) => ListTile(
-            leading: Icon(
-              a.isDefault ? Icons.star : Icons.location_on_outlined,
-            ),
+            leading:
+                Icon(a.isDefault ? Icons.star : Icons.location_on_outlined),
             title: Text(a.fullName),
             subtitle: Text(
               '${a.line1}${a.line2.isNotEmpty ? '\n${a.line2}' : ''}\n${a.city} ${a.zip}',
@@ -185,7 +252,7 @@ class _AddressSection extends StatelessWidget {
   }
 }
 
-/* ====================== Payment Section (Global 2 วิธี) ====================== */
+/* ====================== Payment Section ====================== */
 
 class _PaymentSection extends StatelessWidget {
   final PaymentMethodItem? initial;
@@ -224,7 +291,6 @@ class _PaymentSection extends StatelessWidget {
 
           final selected = _pickInitialPayment(items, initial);
 
-          // ✅ แจ้ง parent เฉพาะ "ครั้งแรก" เท่านั้น กันลูป setState
           if (initial == null) {
             WidgetsBinding.instance
                 .addPostFrameCallback((_) => onPick(selected));
@@ -243,16 +309,12 @@ class _PaymentSection extends StatelessWidget {
 
   PaymentMethodItem _pickInitialPayment(
       List<PaymentMethodItem> items, PaymentMethodItem? init) {
-    // ใช้ค่าที่ผู้ใช้เลือกไว้ก่อน (ถ้ามี)
     if (init != null) {
       final match = items.where((e) => e.id == init.id);
       return match.isNotEmpty ? match.first : init;
     }
-    // ถ้าไม่มีค่าเลือก ค่อยใช้ default
     final def = items.where((e) => e.isDefault).toList();
     if (def.isNotEmpty) return def.first;
-
-    // สุดท้ายใช้ตัวแรกในลิสต์
     return items.first;
   }
 
@@ -425,10 +487,7 @@ class _SectionError extends StatelessWidget {
     return ListTile(
       leading: const Icon(Icons.error_outline, color: Colors.red),
       title: Text(title),
-      subtitle: Text(
-        message,
-        style: const TextStyle(color: Colors.red),
-      ),
+      subtitle: Text(message, style: const TextStyle(color: Colors.red)),
     );
   }
 }

@@ -64,14 +64,15 @@ class AuthService {
   AuthUser? get currentUser => _currentUser;
   bool get isSignedIn => _fa.currentUser != null;
 
-  /// stream เปลี่ยนแปลงสถานะการล็อกอิน (emit AuthUser ที่ resolve role/phone แล้ว)
+  /// stream สถานะการล็อกอิน (emit AuthUser ที่ resolve role/phone แล้ว)
   Stream<AuthUser?> get onAuthStateChanged async* {
     await for (final u in _fa.authStateChanges()) {
       if (u == null) {
         _currentUser = null;
         yield null;
       } else {
-        final role = await _fetchRole(u.uid) ?? UserRole.user;
+        await _ensureUserDoc(u); // seed โปรไฟล์ถ้ายังไม่มี
+        final role = await _resolveRole(u);
         final phone = await _fetchPhone(u.uid) ?? (u.phoneNumber ?? '');
         _currentUser = AuthUser.fromFirebase(u, role: role, phone: phone);
         yield _currentUser;
@@ -90,11 +91,13 @@ class AuthService {
     }
     try {
       final cred = await _fa.signInWithEmailAndPassword(
-        email: email,
+        email: email.trim(),
         password: password,
       );
       final u = cred.user!;
-      final role = await _fetchRole(u.uid) ?? UserRole.user;
+      await _ensureUserDoc(u);
+
+      final role = await _resolveRole(u);
 
       // ถ้ามี forceRole ให้ตรวจสอบ
       if (forceRole != null && role != forceRole) {
@@ -123,19 +126,19 @@ class AuthService {
     }
     try {
       final cred = await _fa.createUserWithEmailAndPassword(
-        email: email,
+        email: email.trim(),
         password: password,
       );
       final u = cred.user!;
-      await u.updateDisplayName(fullName);
+      await u.updateDisplayName(fullName.trim());
 
-      // สร้างเอกสาร users/{uid}
       await _db.collection('users').doc(u.uid).set({
         'profile': {
-          'name': fullName,
-          'email': email,
-          'phone': phone ?? '',
-          'role': 'user', // สมัครใหม่เป็น user
+          'name': fullName.trim(),
+          'email': email.trim(),
+          'phone': phone?.trim() ?? '',
+          // ถ้าใช้ Custom Claims จริง ๆ ไม่จำเป็นต้องเก็บ role ใน Firestore
+          'role': 'user', // ไว้เป็น fallback ระหว่างเปลี่ยนผ่าน
           'createdAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         }
@@ -149,9 +152,6 @@ class AuthService {
   }
 
   /* ---------------------------- UPDATE PROFILE ---------------------------- */
-  /// อัปเดตชื่อ/อีเมล/โทรศัพท์
-  /// - อีเมลใช้ verifyBeforeUpdateEmail (ผู้ใช้ต้องกดลิงก์ยืนยันก่อนถึงจะมีผลที่ Firebase Auth)
-  /// - Firestore จะถูกอัปเดตทันทีเพื่อสะท้อน UI
   Future<AuthUser> updateProfile({
     String? name,
     String? email,
@@ -182,11 +182,10 @@ class AuthService {
       );
     }
 
-    await u.reload(); // refresh ข้อมูล FirebaseAuth (displayName)
+    await u.reload(); // refresh FirebaseAuth (displayName)
     final reloaded = _fa.currentUser!;
 
-    final role = await _fetchRole(reloaded.uid) ?? UserRole.user;
-    // แก้ลำดับการประเมิน ?? กับ await ให้ชัดเจน
+    final role = await _resolveRole(reloaded);
     final phoneValue = phone ??
         (await _fetchPhone(reloaded.uid)) ??
         (reloaded.phoneNumber ?? '');
@@ -197,9 +196,6 @@ class AuthService {
   }
 
   /* ---------------------------- CHANGE PASSWORD ---------------------------- */
-  /// เปลี่ยนรหัสผ่านแบบปลอดภัย:
-  /// - บังคับ re-authenticate ด้วยรหัสเดิมก่อน (required โดย Firebase ในหลายเคส)
-  /// - newPassword ต้องยาว >= 6
   Future<void> changePassword({
     required String oldPassword,
     required String newPassword,
@@ -235,7 +231,6 @@ class AuthService {
   }
 
   /* --------------------- SET INITIAL PASSWORD (link) --------------------- */
-  /// ใช้กับบัญชีที่ยังไม่มีวิธีเข้าสู่ระบบแบบอีเมล/รหัสผ่าน (เช่น สมัครด้วย Google/Apple)
   Future<void> setInitialPassword({
     required String email,
     required String newPassword,
@@ -247,12 +242,12 @@ class AuthService {
     }
 
     try {
-      final methods = await _fa.fetchSignInMethodsForEmail(email);
+      final methods = await _fa.fetchSignInMethodsForEmail(email.trim());
       if (methods.contains('password')) {
         throw Exception('บัญชีนี้มีรหัสผ่านอยู่แล้ว');
       }
-      final cred =
-          EmailAuthProvider.credential(email: email, password: newPassword);
+      final cred = EmailAuthProvider.credential(
+          email: email.trim(), password: newPassword);
       await u
           .linkWithCredential(cred); // ผูก email+password เข้ากับผู้ใช้ปัจจุบัน
       await u.reload();
@@ -268,24 +263,74 @@ class AuthService {
   }
 
   /* ---------------------------- UTILITIES ---------------------------- */
-  Future<UserRole?> _fetchRole(String uid) async {
+
+  /// ✅ อ่าน role แบบ claims-first แล้วค่อย fallback ที่ Firestore (profile.role → top-level role)
+  Future<UserRole> _resolveRole(User u) async {
+    try {
+      // 1) Custom Claims
+      final token = await u.getIdTokenResult(true);
+      final claim = (token.claims?['role'] as String?)?.toLowerCase();
+      if (claim == 'admin') return UserRole.admin;
+    } catch (_) {
+      // เงียบไว้ ไม่ให้พัง flow
+    }
+
+    // 2) Firestore fallback
+    final r = await _fetchRoleFromFirestore(u.uid);
+    return r ?? UserRole.user;
+  }
+
+  /// รองรับทั้งโครงสร้าง profile.role และ top-level role
+  Future<UserRole?> _fetchRoleFromFirestore(String uid) async {
     final snap = await _db.collection('users').doc(uid).get();
     if (!snap.exists) return null;
-    final profile = (snap.data()?['profile'] as Map<String, dynamic>?) ?? {};
-    final r = (profile['role'] as String?) ?? 'user';
+    final data = snap.data() ?? <String, dynamic>{};
+
+    String? roleStr;
+    if (data['profile'] is Map<String, dynamic>) {
+      roleStr = (data['profile']['role'] as String?);
+    }
+    roleStr ??= (data['role'] as String?);
+
+    final r = (roleStr ?? 'user').toLowerCase();
     return r == 'admin' ? UserRole.admin : UserRole.user;
   }
 
   Future<String?> _fetchPhone(String uid) async {
     final snap = await _db.collection('users').doc(uid).get();
     if (!snap.exists) return null;
-    final profile = (snap.data()?['profile'] as Map<String, dynamic>?) ?? {};
-    return profile['phone'] as String?;
+    final data = snap.data() ?? <String, dynamic>{};
+    if (data['profile'] is Map<String, dynamic>) {
+      return data['profile']['phone'] as String?;
+    }
+    return data['phone'] as String?;
+  }
+
+  /// สร้างเอกสาร users/{uid} แบบปลอดภัยถ้ายังไม่มี (ไม่ทับข้อมูลเดิม)
+  Future<void> _ensureUserDoc(User u) async {
+    final ref = _db.collection('users').doc(u.uid);
+    final snap = await ref.get();
+    if (!snap.exists) {
+      await ref.set({
+        'profile': {
+          'name': u.displayName ?? (u.email?.split('@').first ?? 'ผู้ใช้'),
+          'email': u.email ?? '',
+          'phone': u.phoneNumber ?? '',
+          // role: 'user' // ถ้าจะเลิกพึ่ง Firestore role จริง ๆ ตัดบรรทัดนี้ได้
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }
+      }, SetOptions(merge: true));
+    } else {
+      await ref.set({
+        'profile': {'updatedAt': FieldValue.serverTimestamp()}
+      }, SetOptions(merge: true));
+    }
   }
 
   /// ดึง sign-in methods ของอีเมล (ช่วยเช็คว่าบัญชีนี้เป็น password-account ไหม)
   Future<List<String>> getSignInMethods(String email) {
-    return _fa.fetchSignInMethodsForEmail(email);
+    return _fa.fetchSignInMethodsForEmail(email.trim());
   }
 
   /// reload ผู้ใช้ และ sync `_currentUser`
@@ -296,7 +341,8 @@ class AuthService {
       return null;
     }
     await u.reload();
-    final role = await _fetchRole(u.uid) ?? UserRole.user;
+    await _ensureUserDoc(u);
+    final role = await _resolveRole(u);
     final phone = await _fetchPhone(u.uid) ?? (u.phoneNumber ?? '');
     _currentUser =
         AuthUser.fromFirebase(_fa.currentUser!, role: role, phone: phone);
