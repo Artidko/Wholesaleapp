@@ -38,7 +38,6 @@ class OrderService {
   }
 
   /// ---------- Create ----------
-  /// สร้างออเดอร์ใหม่จากตะกร้า แล้วคืนค่า orderId
   Future<String> createOrderFromCart({
     required CartProvider cart,
     required String addressText,
@@ -66,8 +65,10 @@ class OrderService {
     final grandTotal = subTotal + shippingFee;
     final initialStatus = markPaid ? OrderStatus.paid : OrderStatus.pending;
 
-    // ใช้ serverTimestamp เฉพาะฟิลด์บนสุด; ภายใน array ใช้ Timestamp.now()
+    // จองไอดีเอกสารก่อน แล้ว set ครั้งเดียวให้ครบ (เลี่ยง permission update)
+    final ref = _orders.doc();
     final payload = {
+      'id': ref.id, // ใส่ id ตั้งแต่แรก
       'userId': user.uid,
       'lines': lines.map((e) => e.toMap()).toList(),
       'subTotal': subTotal,
@@ -78,18 +79,13 @@ class OrderService {
       'status': initialStatus.name,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
+      // ห้ามใช้ FieldValue.serverTimestamp() ใน array -> ใช้ Timestamp.now()
       'timeline': [
         {'status': initialStatus.name, 'at': Timestamp.now()}
       ],
     };
 
-    // สร้างเอกสาร
-    final ref = await _orders.add(payload);
-
-    // (ออปชัน) เขียน id ซ้ำเข้าไปที่เอกสารด้วย เผื่ออยาก query/แสดงง่าย
-    await ref.update({'id': ref.id});
-
-    // เคลียร์ตะกร้าหลังสั่งสำเร็จ
+    await ref.set(payload);
     cart.clear();
     return ref.id;
   }
@@ -101,8 +97,6 @@ class OrderService {
     return OrderModel.fromDoc(doc);
   }
 
-  /// ออเดอร์ของผู้ใช้แบบเรียลไทม์ (ใหม่สุดก่อน)
-  /// *ต้องสร้าง Composite Index: where(userId) + orderBy(createdAt)
   Stream<List<OrderModel>> watchMyOrders(String userId) {
     return _orders
         .where('userId', isEqualTo: userId)
@@ -111,7 +105,6 @@ class OrderService {
         .map((s) => s.docs.map(OrderModel.fromDoc).toList());
   }
 
-  /// เวอร์ชันไม่ orderBy (ใช้ดีบักกรณีติด index)
   Stream<List<OrderModel>> watchMyOrdersNoOrder(String userId) {
     return _orders
         .where('userId', isEqualTo: userId)
@@ -127,9 +120,8 @@ class OrderService {
     return q.snapshots().map((s) => s.docs.map(OrderModel.fromDoc).toList());
   }
 
-  /// สำหรับผู้ใช้: ดึงเฉพาะสถานะที่ต้องการ
+  /// ผู้ใช้: ดึงเฉพาะสถานะที่ต้องการ
   Stream<List<OrderModel>> watchMyByStatus(String userId, OrderStatus status) {
-    // *อาจต้อง Composite Index: where(userId) + where(status) + orderBy(createdAt)
     return _orders
         .where('userId', isEqualTo: userId)
         .where('status', isEqualTo: status.name)
@@ -139,9 +131,13 @@ class OrderService {
   }
 
   /// ---------- Update ----------
-  /// อัปเดตสถานะ (เช็ค transition + เขียน timeline)
-  Future<void> updateStatus(String orderId, OrderStatus to,
-      {String? cancelReason}) async {
+  /// อัปเดตสถานะ (เพิ่มโหมด force สำหรับแอดมิน)
+  Future<void> updateStatus(
+    String orderId,
+    OrderStatus to, {
+    String? cancelReason,
+    bool force = false,
+  }) async {
     final ref = _orders.doc(orderId);
 
     await _db.runTransaction((tx) async {
@@ -151,27 +147,39 @@ class OrderService {
       final data = snap.data()!;
       final cur = _fromStr((data['status'] ?? 'pending').toString());
 
-      if (!_isValidTransition(cur, to)) {
+      if (!force && !_isValidTransition(cur, to)) {
         throw Exception('เปลี่ยนสถานะไม่ได้: ${cur.name} → ${to.name}');
       }
 
-      // อัปเดตสถานะ + เวลา
+      // อัปเดตสถานะ + เวลา (ใช้ serverTimestamp ได้ที่ฟิลด์บนสุด)
       tx.update(ref, {
         'status': to.name,
         'updatedAt': FieldValue.serverTimestamp(),
         if (to == OrderStatus.cancelled) 'cancelReason': cancelReason ?? '—',
       });
 
-      // เพิ่ม timeline: หลีกเลี่ยง serverTimestamp ภายใน array
+      // timeline: หลีกเลี่ยง serverTimestamp ใน array
       final timeline = (data['timeline'] as List?) ?? [];
       timeline.add({'status': to.name, 'at': Timestamp.now()});
       tx.update(ref, {'timeline': timeline});
     });
   }
 
-  /// ผู้ใช้ยกเลิกออเดอร์ตัวเอง (ได้เฉพาะสถานะที่ยังยกเลิกได้)
-  Future<void> cancelMyOrder(String orderId, String userId,
-      {String reason = 'ผู้ใช้ยกเลิก'}) async {
+  /// เมธอดลัดสำหรับหลังบ้าน (บังคับเปลี่ยนสถานะได้ทุกแบบ)
+  Future<void> adminUpdateStatus(
+    String orderId,
+    OrderStatus to, {
+    String? cancelReason,
+  }) {
+    return updateStatus(orderId, to, cancelReason: cancelReason, force: true);
+  }
+
+  /// ผู้ใช้ยกเลิกออเดอร์ตัวเอง (ได้เฉพาะสถานะ early)
+  Future<void> cancelMyOrder(
+    String orderId,
+    String userId, {
+    String reason = 'ผู้ใช้ยกเลิก',
+  }) async {
     final ref = _orders.doc(orderId);
 
     await _db.runTransaction((tx) async {
@@ -184,7 +192,6 @@ class OrderService {
       }
 
       final cur = _fromStr((data['status'] ?? 'pending').toString());
-      // อนุญาตให้ผู้ใช้ยกเลิกเฉพาะช่วง early: pending / paid / preparing
       final canCancel = {
         OrderStatus.pending,
         OrderStatus.paid,

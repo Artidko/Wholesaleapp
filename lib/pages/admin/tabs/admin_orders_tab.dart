@@ -176,25 +176,27 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
       showDragHandle: true,
       isScrollControlled: true,
       builder: (_) => _AdminOrderDetail(
-        order: o,
-        allowedNext: allowedNext(o.status),
-        onChangeStatus: (to, {String? reason}) async {
-          try {
-            await OrderService.instance
-                .updateStatus(o.id, to, cancelReason: reason);
-            if (!mounted) return;
-            Navigator.pop(context);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                  content: Text('อัปเดตสถานะเป็น "${statusThai(to)}" สำเร็จ')),
-            );
-          } catch (e) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('อัปเดตล้มเหลว: $e')),
-            );
-          }
-        },
-      ),
+          order: o,
+          allowedNext: OrderStatus.values.toList(),
+          onChangeStatus: (to, {String? reason}) async {
+            try {
+              await OrderService.instance
+                  .updateStatus(o.id, to, cancelReason: reason, force: true);
+              if (!mounted) return;
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                    content:
+                        Text('อัปเดตสถานะเป็น "${statusThai(to)}" สำเร็จ')),
+              );
+            } catch (e, st) {
+              // ✅ แสดง log ใน console จะเห็น error จริง ๆ เช่น permission หรือ field missing
+              debugPrint('🔥 UPDATE ERROR: $e\n$st');
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('อัปเดตล้มเหลว: $e')),
+              );
+            }
+          }),
     );
   }
 }
