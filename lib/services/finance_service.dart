@@ -1,6 +1,6 @@
 // lib/services/finance_service.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
-import '../models/finance_entry.dart'; // ใช้เฉพาะ FinanceEntry/FinanceType
+import '../models/finance_entry.dart'; // FinanceEntry, FinanceType
 
 class FinanceService {
   FinanceService._();
@@ -8,6 +8,7 @@ class FinanceService {
 
   final _db = FirebaseFirestore.instance;
 
+  /// คอลเลกชันหลัก
   CollectionReference<Map<String, dynamic>> get _entries =>
       _db.collection('finance_entries');
   CollectionReference<Map<String, dynamic>> get _orders =>
@@ -19,82 +20,104 @@ class FinanceService {
     return double.tryParse(v?.toString() ?? '') ?? 0.0;
   }
 
+  /// ตัดเวลาให้เหลือแค่วันเดียว (กลางคืน 00:00)
   DateTime _dayOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  // ---------- write ----------
-  /// บันทึกรายรับจากออเดอร์ที่ "เสร็จสิ้น" โดยส่งแค่ orderId (ไม่พึ่ง OrderModel)
-  /// - กันซ้ำด้วย orderId + type=income
-  /// - amount = grandTotal (fallback: subTotal + shippingFee)
-  /// - date = completedAt (fallback: วันนี้) บันทึกแบบ day-only
-  Future<void> recordIncomeFromCompletedOrderById(String orderId) async {
-    // กันซ้ำ
-    final dup = await _entries
-        .where('orderId', isEqualTo: orderId)
-        .where('type', isEqualTo: FinanceType.income.name)
-        .limit(1)
-        .get();
-    if (dup.docs.isNotEmpty) return;
+  /// server timestamp
+  Map<String, dynamic> _serverCreatedAt() =>
+      {'createdAt': FieldValue.serverTimestamp()};
 
-    // ดึงออเดอร์
-    final snap = await _orders.doc(orderId).get();
-    final m = snap.data();
+  // ---------- write ----------
+  /// (แนะนำ) ใช้ docId แบบคงที่เพื่อกันซ้ำจริง: income ของออเดอร์เดียว = 1 เอนทรี
+  /// docId: inc_{orderId}
+  String _incomeDocId(String orderId) => 'inc_$orderId';
+
+  /// อัปเสิร์ต "รายรับ" จากออเดอร์ที่สถานะ "completed"
+  /// - กันซ้ำด้วย docId = inc_{orderId}
+  /// - amount = grandTotal (fallback: subTotal + shippingFee)
+  /// - date = completedAt (fallback: วันนี้) — เก็บแบบ day-only
+  Future<void> upsertIncomeFromOrderId(String orderId) async {
+    final orderSnap = await _orders.doc(orderId).get();
+    final m = orderSnap.data();
     if (m == null) return;
 
-    // ต้องเป็น completed เท่านั้น
     final statusStr = (m['status'] ?? '').toString();
     if (statusStr != 'completed') return;
 
-    // จำนวนเงิน
     final amount = (m.containsKey('grandTotal') && m['grandTotal'] != null)
         ? _toDouble(m['grandTotal'])
         : _toDouble(m['subTotal']) + _toDouble(m['shippingFee']);
 
-    // โค้ดออเดอร์เพื่อแสดงในโน้ต (ถ้าไม่มี code ใช้ id)
     final codeStr = (m['code']?.toString().trim().isNotEmpty ?? false)
         ? m['code'].toString()
         : orderId;
 
-    // วันที่ (เก็บแบบ day-only)
     DateTime when = DateTime.now();
     final completedAt = m['completedAt'];
     if (completedAt is Timestamp) when = completedAt.toDate();
     final dateOnly = _dayOnly(when);
 
-    // สร้างเอนทรีรายรับ
-    final entryRef = _entries.doc();
+    final docId = _incomeDocId(orderId);
+    final ref = _entries.doc(docId);
+
     final entry = FinanceEntry(
-      id: entryRef.id,
+      id: docId,
       type: FinanceType.income,
       amount: amount,
       orderId: orderId,
       category: 'Order Income',
       note: 'รายรับจากออเดอร์ #$codeStr',
       date: dateOnly,
-      createdAt: DateTime.now(),
+      createdAt: DateTime.now(), // จะถูกแทนด้วย serverTimestamp ตอน set()
     );
 
-    await entryRef.set(entry.toMap());
+    // ใช้ set(..., merge: true) เพื่อให้เป็น upsert และไม่ทำให้ field อื่นหาย
+    await ref.set({
+      ...entry.toMap(),
+      ..._serverCreatedAt(),
+    }, SetOptions(merge: true));
   }
 
-  /// เพิ่ม "รายจ่าย" แบบแมนนวล
+  /// (เวอร์ชันที่คุณมี) ถ้าต้องการ strictly "บันทึกถ้ายังไม่เคยมี" ให้ใช้ตัวนี้
+  Future<void> recordIncomeFromCompletedOrderById(String orderId) async {
+    final docId = _incomeDocId(orderId);
+    final existing = await _entries.doc(docId).get();
+    if (existing.exists) return;
+    await upsertIncomeFromOrderId(orderId);
+  }
+
+  /// เพิ่ม "รายจ่าย" แบบแมนนวล (amount ให้เป็นบวก)
   Future<void> addExpense({
     required double amount,
     required String category,
     String note = '',
     DateTime? date,
   }) async {
-    final entryRef = _entries.doc();
+    final ref = _entries.doc();
     final entry = FinanceEntry(
-      id: entryRef.id,
+      id: ref.id,
       type: FinanceType.expense,
       amount: amount,
       orderId: null,
       category: category,
       note: note,
       date: _dayOnly(date ?? DateTime.now()),
-      createdAt: DateTime.now(),
+      createdAt: DateTime.now(), // จะถูกแทนด้วย serverTimestamp
     );
-    await entryRef.set(entry.toMap());
+    await ref.set({
+      ...entry.toMap(),
+      ..._serverCreatedAt(),
+    });
+  }
+
+  /// แก้ไข "รายจ่าย" ที่มีอยู่ (หรือจะใช้กับ income ก็ได้ ถ้ารู้ id)
+  Future<void> updateExpense(FinanceEntry entry) async {
+    await _entries.doc(entry.id).update(entry.toMap());
+  }
+
+  /// ลบเอนทรี การเงิน (ใช้ได้ทั้ง income/expense)
+  Future<void> deleteEntry(String id) async {
+    await _entries.doc(id).delete();
   }
 
   // ---------- read (streams) ----------
@@ -116,7 +139,7 @@ class FinanceService {
       double income = 0, expense = 0;
       for (final doc in snap.docs) {
         final d = doc.data();
-        final type = (d['type'] as String?) ?? 'income';
+        final type = (d['type'] as String?) ?? FinanceType.income.name;
         final amt = _toDouble(d['amount']);
         if (type == FinanceType.expense.name) {
           expense += amt;
@@ -144,5 +167,13 @@ class FinanceService {
         .orderBy('date', descending: true)
         .snapshots()
         .map((s) => s.docs.map((d) => FinanceEntry.fromDoc(d)).toList());
+  }
+
+  // ---------- utilities ----------
+  /// รันไล่ sync รายรับจากออเดอร์ชุดหนึ่ง (เช่นตอน maintenance)
+  Future<void> upsertIncomeForOrderIds(Iterable<String> orderIds) async {
+    for (final id in orderIds) {
+      await upsertIncomeFromOrderId(id);
+    }
   }
 }

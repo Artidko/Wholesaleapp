@@ -1,7 +1,7 @@
-// lib/pages/admin/admin_orders_tab.dart
+// lib/pages/admin/tabs/admin_orders_tab.dart
 import 'package:flutter/material.dart';
 import '../../../services/order_service.dart';
-import '../../../models/order.dart'; // OrderModel, OrderStatus
+import '../../../models/order.dart'; // OrderModel, OrderStatus, OrderLine
 
 class AdminOrdersTab extends StatefulWidget {
   const AdminOrdersTab({super.key});
@@ -51,24 +51,6 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
         OrderStatus.cancelled => Colors.red,
       };
 
-  // ต้องสอดคล้องกับ OrderService._isValidTransition()
-  List<OrderStatus> allowedNext(OrderStatus from) => switch (from) {
-        OrderStatus.pending => const <OrderStatus>[
-            OrderStatus.paid,
-            OrderStatus.cancelled
-          ],
-        OrderStatus.paid => const <OrderStatus>[
-            OrderStatus.preparing,
-            OrderStatus.cancelled
-          ],
-        OrderStatus.preparing => const <OrderStatus>[
-            OrderStatus.delivering,
-            OrderStatus.cancelled
-          ],
-        OrderStatus.delivering => const <OrderStatus>[OrderStatus.completed],
-        OrderStatus.completed || OrderStatus.cancelled => const <OrderStatus>[],
-      };
-
   @override
   Widget build(BuildContext context) {
     final selectedStatus =
@@ -77,6 +59,7 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
     return Column(
       children: [
         const SizedBox(height: 8),
+
         // ฟิลเตอร์ด้านบน
         SizedBox(
           height: 40,
@@ -176,27 +159,27 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
       showDragHandle: true,
       isScrollControlled: true,
       builder: (_) => _AdminOrderDetail(
-          order: o,
-          allowedNext: OrderStatus.values.toList(),
-          onChangeStatus: (to, {String? reason}) async {
-            try {
-              await OrderService.instance
-                  .updateStatus(o.id, to, cancelReason: reason, force: true);
-              if (!mounted) return;
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                    content:
-                        Text('อัปเดตสถานะเป็น "${statusThai(to)}" สำเร็จ')),
-              );
-            } catch (e, st) {
-              // ✅ แสดง log ใน console จะเห็น error จริง ๆ เช่น permission หรือ field missing
-              debugPrint('🔥 UPDATE ERROR: $e\n$st');
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('อัปเดตล้มเหลว: $e')),
-              );
-            }
-          }),
+        order: o,
+        // อนุญาตทุกสถานะ (แอดมินกดข้ามลำดับได้)
+        allowedNext: OrderStatus.values.toList(),
+        onChangeStatus: (to, {String? reason}) async {
+          try {
+            await OrderService.instance
+                .updateStatus(o.id, to, cancelReason: reason, force: true);
+            if (!mounted) return;
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                  content: Text('อัปเดตสถานะเป็น "${statusThai(to)}" สำเร็จ')),
+            );
+          } catch (e, st) {
+            debugPrint('🔥 UPDATE ERROR: $e\n$st');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('อัปเดตล้มเหลว: $e')),
+            );
+          }
+        },
+      ),
     );
   }
 }
@@ -226,6 +209,59 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
         OrderStatus.cancelled => 'ยกเลิก',
       };
 
+  // ---------- Helpers (UI) ----------
+  String _money(num n) => '฿${n.toStringAsFixed(0)}';
+
+  Widget _totalRow(String label, String value, {bool bold = false}) {
+    final style = TextStyle(
+      fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
+      fontSize: bold ? 16 : 14,
+    );
+    return Row(
+      children: [
+        Expanded(
+            child: Text(label,
+                style: style.copyWith(fontWeight: FontWeight.w500))),
+        Text(value, style: style),
+      ],
+    );
+  }
+
+  Widget _lineTile(OrderLine l) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: l.imageUrl.isNotEmpty
+              ? Image.network(l.imageUrl,
+                  width: 48, height: 48, fit: BoxFit.cover)
+              : Container(
+                  width: 48,
+                  height: 48,
+                  color: Colors.grey.shade200,
+                  child: const Icon(Icons.image_not_supported_outlined),
+                ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(l.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              Text('x${l.qty} • ${_money(l.price)}',
+                  style: const TextStyle(color: Colors.black54)),
+            ],
+          ),
+        ),
+        Text(_money(l.lineTotal),
+            style: const TextStyle(fontWeight: FontWeight.w700)),
+      ],
+    );
+  }
+  // -----------------------------------
+
   @override
   Widget build(BuildContext context) {
     final o = widget.order;
@@ -237,78 +273,114 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
           top: 8,
           bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('ออเดอร์ #${o.id}',
-                style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            Text('สถานะปัจจุบัน: ${statusThai(o.status)}'),
-            if (o.addressText.isNotEmpty) Text('ที่อยู่: ${o.addressText}'),
-            if (o.paymentText.isNotEmpty) Text('การชำระเงิน: ${o.paymentText}'),
-            const SizedBox(height: 12),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('ออเดอร์ #${o.id}',
+                  style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text('สถานะปัจจุบัน: ${statusThai(o.status)}'),
+              if (o.addressText.isNotEmpty) Text('ที่อยู่: ${o.addressText}'),
+              if (o.paymentText.isNotEmpty)
+                Text('การชำระเงิน: ${o.paymentText}'),
+              const SizedBox(height: 12),
 
-            if (widget.allowedNext.isEmpty)
-              const Text('ออเดอร์นี้ปิดงานแล้ว ไม่สามารถแก้ไขสถานะได้',
-                  style: TextStyle(color: Colors.grey))
-            else
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              // ===== รายการสินค้า =====
+              const Text('รายการสินค้า',
+                  style: TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: o.lines.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder: (_, i) => _lineTile(o.lines[i]),
+              ),
+              const SizedBox(height: 12),
+
+              // ===== สรุปยอด =====
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Column(
+                  children: [
+                    _totalRow('ยอดสินค้า', _money(o.subTotal)),
+                    const SizedBox(height: 6),
+                    _totalRow('ค่าส่ง', _money(o.shippingFee)),
+                    const Divider(height: 16),
+                    _totalRow('ยอดสุทธิ', _money(o.grandTotal), bold: true),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // ===== ปรับสถานะ =====
+              if (widget.allowedNext.isEmpty)
+                const Text('ออเดอร์นี้ปิดงานแล้ว ไม่สามารถแก้ไขสถานะได้',
+                    style: TextStyle(color: Colors.grey))
+              else
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('ปรับสถานะ:'),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: _buildStatusChips(context),
+                    ),
+                  ],
+                ),
+
+              const SizedBox(height: 12),
+
+              // ปุ่มลัด
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
                 children: [
-                  const Text('ปรับสถานะ:'),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: _buildStatusChips(context),
-                  ),
+                  if (widget.allowedNext.contains(OrderStatus.preparing))
+                    OutlinedButton.icon(
+                      onPressed: () =>
+                          widget.onChangeStatus(OrderStatus.preparing),
+                      icon: const Icon(Icons.warehouse),
+                      label: const Text('เริ่มเตรียมสินค้า'),
+                    ),
+                  if (widget.allowedNext.contains(OrderStatus.delivering))
+                    OutlinedButton.icon(
+                      onPressed: () =>
+                          widget.onChangeStatus(OrderStatus.delivering),
+                      icon: const Icon(Icons.local_shipping),
+                      label: const Text('เริ่มจัดส่ง'),
+                    ),
+                  if (widget.allowedNext.contains(OrderStatus.completed))
+                    FilledButton.icon(
+                      onPressed: () =>
+                          widget.onChangeStatus(OrderStatus.completed),
+                      icon: const Icon(Icons.done_all),
+                      label: const Text('ทำเครื่องหมาย “เสร็จสิ้น”'),
+                    ),
+                  if (widget.allowedNext.contains(OrderStatus.cancelled))
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final reason = await _askCancelReason(context);
+                        if (reason == null) return;
+                        await widget.onChangeStatus(OrderStatus.cancelled,
+                            reason: reason);
+                      },
+                      icon: const Icon(Icons.cancel),
+                      label: const Text('ยกเลิกออเดอร์'),
+                    ),
                 ],
               ),
-
-            const SizedBox(height: 12),
-
-            // ปุ่มลัดที่ใช้บ่อย
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                if (widget.allowedNext.contains(OrderStatus.preparing))
-                  OutlinedButton.icon(
-                    onPressed: () =>
-                        widget.onChangeStatus(OrderStatus.preparing),
-                    icon: const Icon(Icons.warehouse),
-                    label: const Text('เริ่มเตรียมสินค้า'),
-                  ),
-                if (widget.allowedNext.contains(OrderStatus.delivering))
-                  OutlinedButton.icon(
-                    onPressed: () =>
-                        widget.onChangeStatus(OrderStatus.delivering),
-                    icon: const Icon(Icons.local_shipping),
-                    label: const Text('เริ่มจัดส่ง'),
-                  ),
-                if (widget.allowedNext.contains(OrderStatus.completed))
-                  FilledButton.icon(
-                    onPressed: () =>
-                        widget.onChangeStatus(OrderStatus.completed),
-                    icon: const Icon(Icons.done_all),
-                    label: const Text('ทำเครื่องหมาย “เสร็จสิ้น”'),
-                  ),
-                if (widget.allowedNext.contains(OrderStatus.cancelled))
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      final reason = await _askCancelReason(context);
-                      if (reason == null) return;
-                      await widget.onChangeStatus(OrderStatus.cancelled,
-                          reason: reason);
-                    },
-                    icon: const Icon(Icons.cancel),
-                    label: const Text('ยกเลิกออเดอร์'),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 8),
-          ],
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
@@ -338,7 +410,7 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
 
     return sequence.map((s) {
       final isCurrent = s == current;
-      final canGo = next.contains(s);
+      final canGo = next.contains(s); // ตอนนี้ next = ทุกสถานะ (force)
       final border = isCurrent ? Colors.green : colorOf(s);
 
       return ChoiceChip(

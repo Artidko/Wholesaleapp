@@ -5,7 +5,7 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ">=3.4.0 <4.0.0"   # ✅ ต้องเป็นช่วงเวอร์ชัน ไม่ใช่ ^
+  sdk: ">=3.4.0 <4.0.0"   # ต้องเป็นช่วงเวอร์ชัน
 
 dependencies:
   flutter:
@@ -18,16 +18,20 @@ dependencies:
   cupertino_icons: ^1.0.8
   qr_flutter: ^4.1.0
   cached_network_image: ^3.4.1
+  intl: ^0.19.0
 
-  # Firebase (ใช้ Firestore เก็บข้อมูล + Auth สำหรับผู้ใช้)
+  # Local storage (ใช้กับหน้า บันทึกรายจ่ายง่ายๆ)
+  shared_preferences: ^2.3.2
+
+  # Firebase
   firebase_core: ^3.5.0
   cloud_firestore: ^5.4.4
-  firebase_auth: ^5.3.1      # ✅ เพิ่มเพื่อผูกข้อมูลกับ uid ของผู้ใช้
+  firebase_auth: ^5.3.1
 
   # Supabase (เก็บรูป & public URL)
   supabase_flutter: ^2.4.8
 
-  # (ถ้าแอดมินจะอัปโหลดรูปจากเครื่อง)
+  # อัปโหลดรูปจากเครื่อง
   image_picker: ^1.1.2
 
 dev_dependencies:
@@ -37,6 +41,3 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  # assets:
-  #   - assets/images/
-  #   - assets/icons/
