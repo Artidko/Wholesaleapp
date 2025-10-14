@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // <-- เพิ่ม
 
 import '../../../services/finance_service.dart';
 import '../../../models/finance_entry.dart'; // FinanceEntry, FinanceType
@@ -18,11 +19,9 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
   final _fmtMoney =
       NumberFormat.currency(locale: 'th_TH', symbol: '฿', decimalDigits: 0);
 
-  // range selector
   final _ranges = const ['วันนี้', '7 วัน', '30 วัน', 'YTD'];
   String _selected = '30 วัน';
 
-  // คำนวณช่วงวันจากตัวเลือก
   ({DateTime start, DateTime end}) _currentRange() {
     final now = DateTime.now();
     final end = DateTime(now.year, now.month, now.day, 23, 59, 59);
@@ -44,23 +43,19 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
     }
   }
 
-  // ---------- helpers ----------
   DateTime _dayOnly(DateTime d) => DateTime(d.year, d.month, d.day);
-
   String _thaiType(FinanceType t) =>
       t == FinanceType.income ? 'รายรับ' : 'รายจ่าย';
-
   Icon _iconFor(FinanceType t) => Icon(
         t == FinanceType.income ? Icons.arrow_downward : Icons.arrow_upward,
         color: t == FinanceType.income ? Colors.green : Colors.red,
       );
 
-  // ---------- CRUD ----------
   Future<void> _addOrEdit({FinanceEntry? editing}) async {
     final isEditing = editing != null;
 
-    final typeVN = ValueNotifier<FinanceType>(
-        editing?.type ?? FinanceType.expense); // default รายจ่าย
+    final typeVN =
+        ValueNotifier<FinanceType>(editing?.type ?? FinanceType.expense);
     final amountCtrl = TextEditingController(
         text: isEditing ? editing!.amount.toString() : '');
     final noteCtrl =
@@ -181,9 +176,19 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
                     return;
                   }
 
+                  // ต้องล็อกอินเสมอ
+                  final uid = FirebaseAuth.instance.currentUser?.uid;
+                  if (uid == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text('กรุณาเข้าสู่ระบบก่อนบันทึก')),
+                    );
+                    return;
+                  }
+
                   final t = typeVN.value;
                   final entry = FinanceEntry(
-                    id: isEditing ? editing!.id : '', // จะกำหนดใหม่ถ้าเป็นเพิ่ม
+                    id: isEditing ? editing!.id : '',
                     type: t,
                     amount: amt,
                     orderId: isEditing ? editing!.orderId : null,
@@ -209,15 +214,15 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
                           date: entry.date,
                         );
                       } else {
-                        // รายรับแบบแมนนวล: เขียนตรงเข้า collection ให้รูปแบบตรง FinanceEntry
+                        // รายรับแบบแมนนวล → ต้องส่ง createdBy ให้ตรง rules
                         final ref = FirebaseFirestore.instance
                             .collection('finance_entries')
                             .doc();
 
-                        // แทน copyWith(): ทำ map แล้ว override id/createdAt
                         final map = entry.toMap();
                         map['id'] = ref.id;
                         map['createdAt'] = FieldValue.serverTimestamp();
+                        map['createdBy'] = uid; // <— จุดสำคัญ
 
                         await ref.set(map);
                       }
@@ -287,7 +292,6 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
           return Column(
             children: [
               const SizedBox(height: 8),
-              // cards summary
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Row(
@@ -336,8 +340,6 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
                 ),
               ),
               const Divider(height: 0),
-
-              // entries list
               Expanded(
                 child: StreamBuilder<List<FinanceEntry>>(
                   stream: FinanceService.instance.watchEntries(
@@ -356,7 +358,6 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
                     if (items.isEmpty) {
                       return const Center(child: Text('ยังไม่มีรายการ'));
                     }
-
                     return ListView.builder(
                       padding: const EdgeInsets.all(16),
                       itemCount: items.length,

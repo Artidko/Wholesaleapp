@@ -1,5 +1,6 @@
 // lib/services/finance_service.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // <-- เพิ่ม
 import '../models/finance_entry.dart'; // FinanceEntry, FinanceType
 
 class FinanceService {
@@ -7,6 +8,8 @@ class FinanceService {
   static final instance = FinanceService._();
 
   final _db = FirebaseFirestore.instance;
+  final _auth = FirebaseAuth.instance; // <-- เพิ่ม
+  String get _uid => _auth.currentUser!.uid; // <-- เพิ่ม
 
   /// คอลเลกชันหลัก
   CollectionReference<Map<String, dynamic>> get _entries =>
@@ -28,7 +31,7 @@ class FinanceService {
       {'createdAt': FieldValue.serverTimestamp()};
 
   // ---------- write ----------
-  /// (แนะนำ) ใช้ docId แบบคงที่เพื่อกันซ้ำจริง: income ของออเดอร์เดียว = 1 เอนทรี
+  /// (แนะนำ) ใช้ docId คงที่เพื่อกันซ้ำ: income ของออเดอร์เดียว = 1 เอนทรี
   /// docId: inc_{orderId}
   String _incomeDocId(String orderId) => 'inc_$orderId';
 
@@ -71,14 +74,15 @@ class FinanceService {
       createdAt: DateTime.now(), // จะถูกแทนด้วย serverTimestamp ตอน set()
     );
 
-    // ใช้ set(..., merge: true) เพื่อให้เป็น upsert และไม่ทำให้ field อื่นหาย
+    // upsert + ใส่ createdBy ให้ผ่าน rules
     await ref.set({
       ...entry.toMap(),
       ..._serverCreatedAt(),
+      'createdBy': _uid, // <-- สำคัญ
     }, SetOptions(merge: true));
   }
 
-  /// (เวอร์ชันที่คุณมี) ถ้าต้องการ strictly "บันทึกถ้ายังไม่เคยมี" ให้ใช้ตัวนี้
+  /// บันทึกเฉพาะถ้ายังไม่เคยมี (กันซ้ำ)
   Future<void> recordIncomeFromCompletedOrderById(String orderId) async {
     final docId = _incomeDocId(orderId);
     final existing = await _entries.doc(docId).get();
@@ -107,12 +111,15 @@ class FinanceService {
     await ref.set({
       ...entry.toMap(),
       ..._serverCreatedAt(),
+      'createdBy': _uid, // <-- สำคัญ
     });
   }
 
-  /// แก้ไข "รายจ่าย" ที่มีอยู่ (หรือจะใช้กับ income ก็ได้ ถ้ารู้ id)
+  /// แก้ไขรายการ (ไม่ไปยุ่ง createdBy)
   Future<void> updateExpense(FinanceEntry entry) async {
-    await _entries.doc(entry.id).update(entry.toMap());
+    await _entries
+        .doc(entry.id)
+        .set(entry.toMap(), SetOptions(merge: true)); // <-- merge
   }
 
   /// ลบเอนทรี การเงิน (ใช้ได้ทั้ง income/expense)
@@ -121,7 +128,7 @@ class FinanceService {
   }
 
   // ---------- read (streams) ----------
-  /// สรุปยอดรายรับ–รายจ่ายในช่วงวัน
+  /// สรุปยอดรายรับ–รายจ่ายในช่วงวัน (เฉพาะของผู้ใช้คนนี้)
   Stream<({double income, double expense})> watchSummary({
     required DateTime start,
     required DateTime end,
@@ -132,6 +139,7 @@ class FinanceService {
         Timestamp.fromDate(DateTime(end.year, end.month, end.day, 23, 59, 59));
 
     final q = _entries
+        .where('createdBy', isEqualTo: _uid) // <-- กรองเจ้าของ
         .where('date', isGreaterThanOrEqualTo: startTs)
         .where('date', isLessThanOrEqualTo: endTs);
 
@@ -151,7 +159,7 @@ class FinanceService {
     });
   }
 
-  /// ลิสต์รายการการเงินในช่วงวัน (ล่าสุดอยู่บน)
+  /// ลิสต์รายการการเงินในช่วงวัน (ล่าสุดอยู่บน) — เฉพาะของผู้ใช้คนนี้
   Stream<List<FinanceEntry>> watchEntries({
     required DateTime start,
     required DateTime end,
@@ -162,6 +170,7 @@ class FinanceService {
         Timestamp.fromDate(DateTime(end.year, end.month, end.day, 23, 59, 59));
 
     return _entries
+        .where('createdBy', isEqualTo: _uid) // <-- กรองเจ้าของ
         .where('date', isGreaterThanOrEqualTo: startTs)
         .where('date', isLessThanOrEqualTo: endTs)
         .orderBy('date', descending: true)
@@ -170,7 +179,7 @@ class FinanceService {
   }
 
   // ---------- utilities ----------
-  /// รันไล่ sync รายรับจากออเดอร์ชุดหนึ่ง (เช่นตอน maintenance)
+  /// รันไล่ sync รายรับจากออเดอร์ชุดหนึ่ง
   Future<void> upsertIncomeForOrderIds(Iterable<String> orderIds) async {
     for (final id in orderIds) {
       await upsertIncomeFromOrderId(id);
