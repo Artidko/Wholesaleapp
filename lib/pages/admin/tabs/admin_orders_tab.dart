@@ -1,7 +1,11 @@
 // lib/pages/admin/tabs/admin_orders_tab.dart
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 import '../../../services/order_service.dart';
 import '../../../models/order.dart'; // OrderModel, OrderStatus, OrderLine
+import '../../../services/driver_location_service.dart'; // ✅ แชร์พิกัดจากเครื่องนี้
 
 class AdminOrdersTab extends StatefulWidget {
   const AdminOrdersTab({super.key});
@@ -140,7 +144,24 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
                               style: const TextStyle(fontSize: 12.5)),
                         ],
                       ),
-                      trailing: Text('฿${o.grandTotal.toStringAsFixed(0)}'),
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text('฿${o.grandTotal.toStringAsFixed(0)}'),
+                          // ปุ่มลัดเริ่มแชร์ (เฉพาะกำลังจัดส่ง)
+                          if (o.status == OrderStatus.delivering)
+                            TextButton.icon(
+                              icon: const Icon(Icons.play_arrow, size: 18),
+                              onPressed: () => _startShareFromList(context, o),
+                              label: const Text('แชร์พิกัด'),
+                              style: TextButton.styleFrom(
+                                padding: EdgeInsets.zero,
+                                visualDensity: VisualDensity.compact,
+                              ),
+                            ),
+                        ],
+                      ),
                       onTap: () => _openDetail(context, o),
                     ),
                   );
@@ -151,6 +172,28 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
         ),
       ],
     );
+  }
+
+  Future<void> _startShareFromList(BuildContext context, OrderModel o) async {
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) throw 'ยังไม่ได้เข้าสู่ระบบ';
+
+      // ตั้ง admin คนนี้เป็น driverId (เพื่อให้ Rules อนุญาตเขียนพิกัด)
+      await FirebaseFirestore.instance.collection('orders').doc(o.id).update({
+        'driverId': uid,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      await DriverLocationService.instance.startTrackingOrder(o.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('เริ่มแชร์ตำแหน่งสำหรับออเดอร์นี้')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('เริ่มแชร์ไม่สำเร็จ: $e')));
+    }
   }
 
   Future<void> _openDetail(BuildContext context, OrderModel o) async {
@@ -200,6 +243,8 @@ class _AdminOrderDetail extends StatefulWidget {
 }
 
 class _AdminOrderDetailState extends State<_AdminOrderDetail> {
+  bool _tracking = false;
+
   String statusThai(OrderStatus s) => switch (s) {
         OrderStatus.pending => 'รอชำระ',
         OrderStatus.paid => 'ชำระแล้ว',
@@ -261,6 +306,41 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
     );
   }
   // -----------------------------------
+
+  Future<void> _assignMeAsDriver(String orderId) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) throw 'ยังไม่ได้เข้าสู่ระบบ';
+    await FirebaseFirestore.instance.collection('orders').doc(orderId).update({
+      'driverId': uid,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> _startShare() async {
+    final id = widget.order.id;
+    await _assignMeAsDriver(id);
+    await DriverLocationService.instance.startTrackingOrder(id);
+    if (mounted) {
+      setState(() => _tracking = true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('เริ่มแชร์ตำแหน่งแล้ว')),
+      );
+    }
+  }
+
+  void _stopShare() {
+    DriverLocationService.instance.stop();
+    setState(() => _tracking = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('หยุดแชร์ตำแหน่งแล้ว')),
+    );
+  }
+
+  @override
+  void dispose() {
+    DriverLocationService.instance.stop();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -353,10 +433,14 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
                     ),
                   if (widget.allowedNext.contains(OrderStatus.delivering))
                     OutlinedButton.icon(
-                      onPressed: () =>
-                          widget.onChangeStatus(OrderStatus.delivering),
+                      onPressed: () async {
+                        // เปลี่ยนสถานะ + ตั้ง admin เป็น driver แล้วเริ่มแชร์เลย
+                        await widget.onChangeStatus(OrderStatus.delivering);
+                        await _assignMeAsDriver(o.id);
+                        await _startShare();
+                      },
                       icon: const Icon(Icons.local_shipping),
-                      label: const Text('เริ่มจัดส่ง'),
+                      label: const Text('เริ่มจัดส่ง & แชร์พิกัด'),
                     ),
                   if (widget.allowedNext.contains(OrderStatus.completed))
                     FilledButton.icon(
@@ -378,6 +462,41 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
                     ),
                 ],
               ),
+
+              const SizedBox(height: 12),
+              const Divider(),
+
+              // ===== โหมดไรเดอร์ (ฝั่งแอดมิน) แชร์ตำแหน่ง =====
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed:
+                          (o.status == OrderStatus.delivering && !_tracking)
+                              ? _startShare
+                              : null,
+                      icon: const Icon(Icons.play_arrow),
+                      label: const Text('เริ่มแชร์ตำแหน่ง'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.tonalIcon(
+                      onPressed: _tracking ? _stopShare : null,
+                      icon: const Icon(Icons.stop),
+                      label: const Text('หยุดแชร์'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                (o.status == OrderStatus.delivering)
+                    ? 'แชร์พิกัดจากอุปกรณ์แอดมินนี้ไปยังผู้ใช้แบบเรียลไทม์'
+                    : 'ต้องอยู่สถานะ "กำลังจัดส่ง" จึงจะเริ่มแชร์พิกัดได้',
+                style: const TextStyle(color: Colors.black54, fontSize: 12.5),
+              ),
+
               const SizedBox(height: 8),
             ],
           ),

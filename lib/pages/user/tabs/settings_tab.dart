@@ -1,11 +1,17 @@
+// lib/pages/user/tabs/settings_tab.dart
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+
 import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../../services/auth_service.dart';
 import '../../../services/user_settings_service.dart';
 import '../../../models/address_item.dart';
 import '../../../models/payment_method_item.dart';
+
+import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
 
 class SettingsTab extends StatefulWidget {
   const SettingsTab({super.key});
@@ -33,7 +39,6 @@ class _SettingsTabState extends State<SettingsTab> {
     displayEmail = u?.email ?? (AuthService.instance.currentUser?.email ?? '');
     displayPhone = AuthService.instance.currentUser?.phone ?? '';
 
-    // ✅ subscribe profile เฉพาะตอนล็อกอินเท่านั้น
     if (_isSignedIn) {
       _profileSub =
           UserSettingsService.instance.profileStream().listen((profile) {
@@ -60,7 +65,6 @@ class _SettingsTabState extends State<SettingsTab> {
       return;
     }
 
-    // แยกชื่อ-นามสกุลแบบง่าย
     String first = displayName.trim();
     String last = '';
     if (displayName.contains(' ')) {
@@ -400,21 +404,18 @@ class _SettingsTabState extends State<SettingsTab> {
                   Expanded(
                     child: StreamBuilder<List<AddressItem>>(
                       stream: UserSettingsService.instance.addressesStream(),
-                      initialData: const [], // ✅ ป้องกันกระพริบตอน Stream rebuild
+                      initialData: const [],
                       builder: (context, snap) {
                         if (snap.hasError) {
                           return Center(
-                            child: Text(
-                              '❌ เกิดข้อผิดพลาด: ${snap.error}',
-                              style: const TextStyle(color: Colors.red),
-                            ),
+                            child: Text('❌ เกิดข้อผิดพลาด: ${snap.error}',
+                                style: const TextStyle(color: Colors.red)),
                           );
                         }
 
                         if (snap.connectionState == ConnectionState.waiting) {
                           return const Center(
-                            child: CircularProgressIndicator(),
-                          );
+                              child: CircularProgressIndicator());
                         }
 
                         final items = snap.data ?? [];
@@ -429,11 +430,9 @@ class _SettingsTabState extends State<SettingsTab> {
                             final a = items[i];
                             return Card(
                               child: ListTile(
-                                leading: Icon(
-                                  a.isDefault
-                                      ? Icons.star
-                                      : Icons.location_on_outlined,
-                                ),
+                                leading: Icon(a.isDefault
+                                    ? Icons.star
+                                    : Icons.location_on_outlined),
                                 title: Text(a.fullName),
                                 subtitle: Text(
                                   '${a.line1}${a.line2.isNotEmpty ? '\n${a.line2}' : ''}\n${a.city} ${a.zip}',
@@ -514,12 +513,101 @@ class _SettingsTabState extends State<SettingsTab> {
     bool isDefault = item?.isDefault ?? false;
     bool saving = false;
 
+    // เก็บพิกัดล่าสุดจาก GPS (ถ้ากดปุ่ม)
+    double? gpsLat, gpsLng;
+
     await showModalBottomSheet(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (ctx) {
         return StatefulBuilder(builder: (ctx, setSt) {
+          Future<void> _useGPS() async {
+            try {
+              // ขอสิทธิ์
+              LocationPermission perm = await Geolocator.checkPermission();
+              if (perm == LocationPermission.denied) {
+                perm = await Geolocator.requestPermission();
+              }
+              if (perm == LocationPermission.deniedForever ||
+                  perm == LocationPermission.denied) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(content: Text('ไม่ได้รับอนุญาตตำแหน่ง')),
+                );
+                return;
+              }
+
+              final pos = await Geolocator.getCurrentPosition(
+                desiredAccuracy: LocationAccuracy.best,
+              );
+              gpsLat = pos.latitude;
+              gpsLng = pos.longitude;
+
+              // reverse geocode (Nominatim)
+              final uri =
+                  Uri.parse('https://nominatim.openstreetmap.org/reverse')
+                      .replace(queryParameters: {
+                'lat': pos.latitude.toString(),
+                'lon': pos.longitude.toString(),
+                'format': 'json',
+                'zoom': '18',
+                'addressdetails': '1',
+              });
+
+              final res = await http.get(uri, headers: {
+                'User-Agent':
+                    'flutter_application_2/1.0 (contact: you@example.com)',
+              });
+              if (res.statusCode != 200) {
+                throw 'Reverse geocode error ${res.statusCode}';
+              }
+
+              final data = json.decode(res.body) as Map<String, dynamic>;
+              final addr = (data['address'] ?? {}) as Map<String, dynamic>;
+
+              final province =
+                  (addr['state'] ?? addr['province'] ?? '') as String;
+              final amphoe = (addr['county'] ??
+                  addr['district'] ??
+                  addr['city_district'] ??
+                  '') as String;
+              final tambon = (addr['suburb'] ??
+                  addr['village'] ??
+                  addr['town'] ??
+                  addr['city'] ??
+                  '') as String;
+              final postcode = (addr['postcode'] ?? '') as String;
+
+              final composed = [
+                if (tambon.isNotEmpty) tambon,
+                if (amphoe.isNotEmpty) amphoe,
+                if (province.isNotEmpty) province,
+              ].join(', ');
+
+              setSt(() {
+                if (line1Ctrl.text.trim().isEmpty) {
+                  final dn = (data['display_name'] as String? ?? '')
+                      .split(',')
+                      .take(2)
+                      .join(', ')
+                      .trim();
+                  if (dn.isNotEmpty) line1Ctrl.text = dn;
+                }
+                cityCtrl.text = composed;
+                zipCtrl.text = postcode;
+              });
+
+              ScaffoldMessenger.of(ctx).showSnackBar(
+                const SnackBar(
+                    content: Text('เติมที่อยู่จากตำแหน่งปัจจุบันแล้ว')),
+              );
+            } catch (e) {
+              ScaffoldMessenger.of(ctx).showSnackBar(
+                SnackBar(content: Text('ใช้ GPS ไม่สำเร็จ: $e')),
+              );
+            }
+          }
+
           return Padding(
             padding: EdgeInsets.only(
               left: 16,
@@ -562,13 +650,21 @@ class _SettingsTabState extends State<SettingsTab> {
                           labelText: 'ที่อยู่บรรทัด 2 (ไม่บังคับ)'),
                     ),
                     const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: OutlinedButton.icon(
+                        onPressed: _useGPS,
+                        icon: const Icon(Icons.my_location),
+                        label: const Text('ใช้ตำแหน่งปัจจุบันเติมให้'),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
                     TextFormField(
                       controller: cityCtrl,
-                      decoration:
-                          const InputDecoration(labelText: 'เขต/อำเภอ/จังหวัด'),
-                      validator: (v) => (v == null || v.trim().isEmpty)
-                          ? 'กรุณากรอกจังหวัด/อำเภอ'
-                          : null,
+                      decoration: const InputDecoration(
+                        labelText: 'เขต/อำเภอ/จังหวัด',
+                      ),
+                      readOnly: false,
                     ),
                     const SizedBox(height: 12),
                     TextFormField(
@@ -626,15 +722,19 @@ class _SettingsTabState extends State<SettingsTab> {
                                         .setDefaultAddress(item?.id ?? newId);
                                   }
 
+                                  // ถ้าอยากเก็บ lat/lng ของที่อยู่นี้ด้วย:
+                                  // if (gpsLat != null && gpsLng != null) {
+                                  //   await UserSettingsService.instance
+                                  //     .updateAddressLocation(item?.id ?? newId, gpsLat!, gpsLng!);
+                                  // }
+
                                   if (!mounted) return;
                                   Navigator.pop(ctx);
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
-                                      content: Text(
-                                        item == null
-                                            ? 'เพิ่มที่อยู่สำเร็จ'
-                                            : 'แก้ไขที่อยู่สำเร็จ',
-                                      ),
+                                      content: Text(item == null
+                                          ? 'เพิ่มที่อยู่สำเร็จ'
+                                          : 'แก้ไขที่อยู่สำเร็จ'),
                                     ),
                                   );
                                 } catch (e) {
@@ -710,11 +810,9 @@ class _SettingsTabState extends State<SettingsTab> {
                             final p = items[i];
                             return Card(
                               child: ListTile(
-                                leading: Icon(
-                                  p.isDefault
-                                      ? Icons.star
-                                      : Icons.payment_outlined,
-                                ),
+                                leading: Icon(p.isDefault
+                                    ? Icons.star
+                                    : Icons.payment_outlined),
                                 title: Text(p.label),
                                 trailing: PopupMenuButton<String>(
                                   onSelected: (v) async {
@@ -738,26 +836,21 @@ class _SettingsTabState extends State<SettingsTab> {
                                   },
                                   itemBuilder: (_) => const [
                                     PopupMenuItem(
-                                      value: 'edit',
-                                      child: ListTile(
-                                        leading: Icon(Icons.edit),
-                                        title: Text('แก้ไข'),
-                                      ),
-                                    ),
+                                        value: 'edit',
+                                        child: ListTile(
+                                            leading: Icon(Icons.edit),
+                                            title: Text('แก้ไข'))),
                                     PopupMenuItem(
-                                      value: 'default',
-                                      child: ListTile(
-                                        leading: Icon(Icons.star),
-                                        title: Text('ตั้งเป็นค่าเริ่มต้น'),
-                                      ),
-                                    ),
+                                        value: 'default',
+                                        child: ListTile(
+                                            leading: Icon(Icons.star),
+                                            title:
+                                                Text('ตั้งเป็นค่าเริ่มต้น'))),
                                     PopupMenuItem(
-                                      value: 'delete',
-                                      child: ListTile(
-                                        leading: Icon(Icons.delete_outline),
-                                        title: Text('ลบ'),
-                                      ),
-                                    ),
+                                        value: 'delete',
+                                        child: ListTile(
+                                            leading: Icon(Icons.delete_outline),
+                                            title: Text('ลบ'))),
                                   ],
                                 ),
                               ),
@@ -862,11 +955,9 @@ class _SettingsTabState extends State<SettingsTab> {
                                 Navigator.pop(ctx);
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
-                                    content: Text(
-                                      item == null
-                                          ? 'เพิ่มวิธีชำระเงินสำเร็จ'
-                                          : 'แก้ไขวิธีชำระเงินสำเร็จ',
-                                    ),
+                                    content: Text(item == null
+                                        ? 'เพิ่มวิธีชำระเงินสำเร็จ'
+                                        : 'แก้ไขวิธีชำระเงินสำเร็จ'),
                                   ),
                                 );
                               } catch (e) {
@@ -892,7 +983,6 @@ class _SettingsTabState extends State<SettingsTab> {
   @override
   Widget build(BuildContext context) {
     if (!_isSignedIn) {
-      // ✅ ยังไม่ล็อกอิน: แสดงปุ่มไปหน้า Login
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -991,7 +1081,7 @@ class _SettingsTabState extends State<SettingsTab> {
               if (context.mounted) {
                 Navigator.pushNamedAndRemoveUntil(
                   context,
-                  '/login/user', // ตรวจให้ตรง route จริงในโปรเจกต์
+                  '/login/user',
                   (_) => false,
                 );
               }

@@ -5,7 +5,7 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ">=3.4.0 <4.0.0"   # ต้องเป็นช่วงเวอร์ชัน
+  sdk: ">=3.4.0 <4.0.0"
 
 dependencies:
   flutter:
@@ -20,7 +20,7 @@ dependencies:
   cached_network_image: ^3.4.1
   intl: ^0.19.0
 
-  # Local storage (ใช้กับหน้า บันทึกรายจ่ายง่ายๆ)
+  # Local storage
   shared_preferences: ^2.3.2
 
   # Firebase
@@ -28,11 +28,22 @@ dependencies:
   cloud_firestore: ^5.4.4
   firebase_auth: ^5.3.1
 
-  # Supabase (เก็บรูป & public URL)
+  # (ถ้าเลิกใช้ Supabase แล้ว สามารถลบบรรทัดนี้ได้)
   supabase_flutter: ^2.4.8
 
   # อัปโหลดรูปจากเครื่อง
   image_picker: ^1.1.2
+
+  # ---- GPS Order Tracking ----
+  geolocator: ^10.1.0
+  permission_handler: ^11.3.1
+
+  # ---- OpenStreetMap via flutter_map ----
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.1
+
+  # ---- Routing / Polyline (OSRM, etc.) ----
+  http: ^1.2.2
 
 dev_dependencies:
   flutter_test:
@@ -41,3 +52,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # assets:
+  #   - assets/images/
+  #   - assets/icons/

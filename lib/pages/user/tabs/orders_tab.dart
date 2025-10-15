@@ -1,10 +1,15 @@
+// lib/pages/user/tabs/orders_tab.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:intl/intl.dart';
 
 import '../../shared/widgets.dart'; // ใช้ OrderStatusChip
 import '../../../services/order_service.dart';
 import '../../../models/order.dart';
 import '../../widgets/order_view_page.dart'; // เปิดรายละเอียดด้วย orderId
+
+// 👉 เพิ่มหน้าแผนที่ OSM
+import 'order_tracking_map_osm.dart';
 
 class OrdersTab extends StatefulWidget {
   const OrdersTab({super.key});
@@ -52,6 +57,10 @@ class _OrdersTabState extends State<OrdersTab> {
     }
   }
 
+  final _dateFmt = DateFormat('dd/MM/yyyy HH:mm'); // แสดงวันที่สวยขึ้น
+  final _moneyFmt =
+      NumberFormat.currency(locale: 'th_TH', symbol: '฿', decimalDigits: 0);
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -98,7 +107,7 @@ class _OrdersTabState extends State<OrdersTab> {
           ),
         ),
 
-        const Divider(),
+        const Divider(height: 16),
 
         // รายการออเดอร์ของ "ผู้ใช้คนนี้เท่านั้น"
         Expanded(
@@ -156,29 +165,98 @@ class _OrdersTabState extends State<OrdersTab> {
                 itemCount: list.length,
                 itemBuilder: (_, i) {
                   final o = list[i];
-                  return Card(
-                    child: ListTile(
-                      leading: const Icon(Icons.receipt_long),
-                      title: Text('คำสั่งซื้อ #${o.id}'),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const SizedBox(height: 4),
-                          OrderStatusChip(_statusToTh(o.status)),
-                          const SizedBox(height: 4),
-                          Text('สร้างเมื่อ: ${o.createdAt}',
-                              style: Theme.of(context).textTheme.bodySmall),
-                        ],
-                      ),
-                      trailing: Text('฿${o.grandTotal.toStringAsFixed(0)}'),
 
-                      // ไปหน้าแสดงรายละเอียด (โหลดจากฐานด้วย orderId)
+                  return Card(
+                    elevation: 0.5,
+                    child: InkWell(
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(
                               builder: (_) => OrderViewPage(orderId: o.id)),
                         );
                       },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Padding(
+                              padding: EdgeInsets.only(top: 4),
+                              child: Icon(Icons.receipt_long),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // หัวข้อ
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text('คำสั่งซื้อ #${o.id}',
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.w600)),
+                                      ),
+                                      Text(_moneyFmt.format(o.grandTotal)),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  // สถานะ
+                                  OrderStatusChip(_statusToTh(o.status)),
+                                  const SizedBox(height: 4),
+                                  // วันเวลา
+                                  Text(
+                                    'สร้างเมื่อ: ${_dateFmt.format(o.createdAt)}',
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                  const SizedBox(height: 8),
+
+                                  // ปุ่มการทำงาน
+                                  Row(
+                                    children: [
+                                      OutlinedButton.icon(
+                                        onPressed: () {
+                                          Navigator.of(context).push(
+                                            MaterialPageRoute(
+                                              builder: (_) =>
+                                                  OrderViewPage(orderId: o.id),
+                                            ),
+                                          );
+                                        },
+                                        icon: const Icon(
+                                            Icons.visibility_outlined,
+                                            size: 18),
+                                        label: const Text('รายละเอียด'),
+                                      ),
+                                      const SizedBox(width: 8),
+
+                                      // แสดงปุ่ม "ติดตาม" เมื่อสถานะกำลังจัดส่ง
+                                      if (o.status == OrderStatus.delivering)
+                                        FilledButton.icon(
+                                          onPressed: () {
+                                            Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder: (_) =>
+                                                    OrderTrackingMapOSM(
+                                                        orderId: o.id),
+                                              ),
+                                            );
+                                          },
+                                          icon: const Icon(Icons.map_outlined,
+                                              size: 18),
+                                          label: const Text('ติดตาม'),
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   );
                 },
