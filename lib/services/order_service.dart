@@ -97,6 +97,11 @@ class OrderService {
     return OrderModel.fromDoc(doc);
   }
 
+  /// สตรีมออเดอร์เดียว (ใช้ในหน้าแผนที่/ติดตาม)
+  Stream<OrderModel> watchOrder(String orderId) {
+    return _orders.doc(orderId).snapshots().map((d) => OrderModel.fromDoc(d));
+  }
+
   Stream<List<OrderModel>> watchMyOrders(String userId) {
     return _orders
         .where('userId', isEqualTo: userId)
@@ -209,6 +214,50 @@ class OrderService {
       timeline
           .add({'status': OrderStatus.cancelled.name, 'at': Timestamp.now()});
       tx.update(ref, {'timeline': timeline});
+    });
+  }
+
+  // ---------- Rider/Driver helpers (ใหม่) ----------
+
+  /// ตั้งคนขับของออเดอร์ (ใช้ตอนแอดมิน/ไรเดอร์เริ่มแชร์)
+  Future<void> setDriver(String orderId, String driverId) async {
+    await _orders.doc(orderId).set({
+      'driverId': driverId,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  /// เปิด/ปิดแฟลกการแชร์พิกัด
+  Future<void> setRiderTracking(String orderId, bool enabled) async {
+    await _orders.doc(orderId).set({
+      'rider': {
+        'trackingEnabled': enabled,
+        'startedAt': enabled ? FieldValue.serverTimestamp() : null,
+      }
+    }, SetOptions(merge: true));
+  }
+
+  /// อัปเดตตำแหน่งไรเดอร์ปัจจุบัน
+  Future<void> updateRiderLocation(
+      String orderId, double lat, double lng) async {
+    await _orders.doc(orderId).set({
+      'rider': {
+        'location': {
+          'lat': lat,
+          'lng': lng,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }
+      }
+    }, SetOptions(merge: true));
+  }
+
+  /// ดูเฉพาะบล็อก rider แบบสตรีม (ใช้ตรวจว่ามีพิกัด/กำลังแชร์หรือไม่)
+  Stream<Map<String, dynamic>?> watchRider(String orderId) {
+    return _orders.doc(orderId).snapshots().map((d) {
+      final data = d.data();
+      if (data == null) return null;
+      final r = data['rider'];
+      return (r is Map<String, dynamic>) ? r : null;
     });
   }
 }

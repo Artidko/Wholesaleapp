@@ -2,17 +2,18 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../../services/driver_location_service.dart';
+// ถ้ามี util ขอสิทธิ์ ให้ import ด้วย
+// import '../../../utils/location_permission.dart';
 
-class AdminRiderControlTab extends StatefulWidget {
-  const AdminRiderControlTab({super.key});
+class AdminDriverControlTab extends StatefulWidget {
+  const AdminDriverControlTab({super.key});
 
   @override
-  State<AdminRiderControlTab> createState() => _AdminRiderControlTabState();
+  State<AdminDriverControlTab> createState() => _AdminDriverControlTabState();
 }
 
-class _AdminRiderControlTabState extends State<AdminRiderControlTab> {
+class _AdminDriverControlTabState extends State<AdminDriverControlTab> {
   String? _selectedOrderId;
-  bool _tracking = false;
 
   Stream<QuerySnapshot<Map<String, dynamic>>> _deliveringOrders() {
     return FirebaseFirestore.instance
@@ -26,9 +27,10 @@ class _AdminRiderControlTabState extends State<AdminRiderControlTab> {
   Future<void> _assignMeAsDriver(String orderId) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-    // ให้แอดมินเป็น driver ของออเดอร์นี้ (อุปกรณ์นี้จะเป็นเครื่องที่แชร์พิกัด)
+
+    // ✅ ให้ชื่อฟิลด์ตรงกับ rules ของคุณ (เลือก driverUid หรือ driverId แล้วใช้ทั้งโปรเจกต์)
     await FirebaseFirestore.instance.collection('orders').doc(orderId).update({
-      'driverId': uid,
+      'driverUid': uid, // ถ้าใช้ driverId ให้เปลี่ยนตรงนี้ + rules ให้ตรงกัน
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
@@ -36,14 +38,21 @@ class _AdminRiderControlTabState extends State<AdminRiderControlTab> {
   Future<void> _start() async {
     final id = _selectedOrderId;
     if (id == null) return;
-    await _assignMeAsDriver(id); // กันพลาด: ตั้ง driverId = admin คนนี้
-    await DriverLocationService.instance.startTrackingOrder(id);
-    setState(() => _tracking = true);
+
+    // ถ้ามีฟังก์ชันขอสิทธิ์ให้เรียกก่อน
+    // if (!await ensureLocationPermission()) return;
+
+    await _assignMeAsDriver(id);
+    await DriverLocationService.instance.startTrackingOrder(
+      id,
+      alsoAppendHistory: true,
+    );
+    setState(() {}); // รีเฟรชปุ่มตาม isRunning
   }
 
-  void _stop() {
-    DriverLocationService.instance.stop();
-    setState(() => _tracking = false);
+  void _stop() async {
+    await DriverLocationService.instance.stop();
+    setState(() {});
   }
 
   @override
@@ -54,8 +63,10 @@ class _AdminRiderControlTabState extends State<AdminRiderControlTab> {
 
   @override
   Widget build(BuildContext context) {
+    final running = DriverLocationService.instance.isRunning;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('โหมดไรเดอร์ (ฝั่งแอดมิน)')),
+      appBar: AppBar(title: const Text('โหมด Driver (ฝั่งแอดมิน)')),
       body: Column(
         children: [
           const SizedBox(height: 12),
@@ -104,9 +115,8 @@ class _AdminRiderControlTabState extends State<AdminRiderControlTab> {
               children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: (!_tracking && _selectedOrderId != null)
-                        ? _start
-                        : null,
+                    onPressed:
+                        (!running && _selectedOrderId != null) ? _start : null,
                     icon: const Icon(Icons.play_arrow),
                     label: const Text('เริ่มแชร์ตำแหน่ง'),
                   ),
@@ -114,7 +124,7 @@ class _AdminRiderControlTabState extends State<AdminRiderControlTab> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: FilledButton.tonalIcon(
-                    onPressed: _tracking ? _stop : null,
+                    onPressed: running ? _stop : null,
                     icon: const Icon(Icons.stop),
                     label: const Text('หยุดแชร์ตำแหน่ง'),
                   ),
@@ -126,7 +136,7 @@ class _AdminRiderControlTabState extends State<AdminRiderControlTab> {
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
             child: Text(
-              'หมายเหตุ: เมื่อกด "เริ่มแชร์ตำแหน่ง" ระบบจะตั้ง driverId ให้เป็นบัญชีแอดมินที่ใช้อุปกรณ์นี้ แล้วส่งพิกัดแบบเรียลไทม์ไปยังออเดอร์นั้น',
+              'หมายเหตุ: เมื่อกด "เริ่มแชร์ตำแหน่ง" ระบบจะตั้ง driverUid ให้เป็นบัญชีแอดมินของอุปกรณ์นี้ และส่งพิกัดแบบเรียลไทม์ไปยังออเดอร์ที่เลือก',
               style: TextStyle(color: Colors.black54),
             ),
           ),

@@ -4,8 +4,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../services/order_service.dart';
-import '../../../models/order.dart'; // OrderModel, OrderStatus, OrderLine
-import '../../../services/driver_location_service.dart'; // ✅ แชร์พิกัดจากเครื่องนี้
+import '../../../models/order.dart';
+import '../../../services/driver_location_service.dart';
 
 class AdminOrdersTab extends StatefulWidget {
   const AdminOrdersTab({super.key});
@@ -26,7 +26,6 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
   ];
   String selected = 'ทั้งหมด';
 
-  // ---- Helpers ----
   String statusThai(OrderStatus s) => switch (s) {
         OrderStatus.pending => 'รอชำระ',
         OrderStatus.paid => 'ชำระแล้ว',
@@ -57,44 +56,82 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final primary = theme.colorScheme.primary;
     final selectedStatus =
         selected == 'ทั้งหมด' ? null : statusFromThai(selected);
 
-    return Column(
-      children: [
-        const SizedBox(height: 8),
+    // ---- Header: ไอคอนเล็ก + ข้อความ + ระยะหายใจ ----
+    final header = Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      child: Row(
+        children: [
+          Icon(Icons.receipt_long,
+              size: 18, color: theme.colorScheme.onSurface.withOpacity(.7)),
+          const SizedBox(width: 8),
+          Text(
+            'คำสั่งซื้อ',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+              letterSpacing: .2,
+            ),
+          ),
+        ],
+      ),
+    );
 
-        // ฟิลเตอร์ด้านบน
-        SizedBox(
-          height: 40,
+    // ---- Filter bar: OutlinedButton มน 8px ใน Material elevation 1 ----
+    final filterBar = Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Material(
+        elevation: 1,
+        shadowColor: Colors.black12,
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(10),
+        child: SizedBox(
+          height: 52,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             itemCount: filters.length,
             separatorBuilder: (_, __) => const SizedBox(width: 8),
             itemBuilder: (_, i) {
               final f = filters[i];
               final sel = f == selected;
-              return ChoiceChip(
-                label: Text(f),
-                selected: sel,
-                onSelected: (_) => setState(() => selected = f),
-                labelStyle: const TextStyle(
-                    color: Colors.black, fontWeight: FontWeight.w600),
-                backgroundColor: Colors.white,
-                selectedColor: Colors.white,
-                side: BorderSide(
-                    color: sel ? Colors.green : Colors.grey.shade400,
-                    width: sel ? 2 : 1),
-                shape: const StadiumBorder(),
-                visualDensity: VisualDensity.compact,
+              return OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  minimumSize: const Size(0, 36),
+                  side: BorderSide(
+                    color:
+                        sel ? primary.withOpacity(.55) : Colors.grey.shade300,
+                    width: sel ? 1.5 : 1,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  backgroundColor: sel ? primary.withOpacity(.06) : null,
+                  foregroundColor: Colors.black87,
+                  textStyle: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                onPressed: () => setState(() => selected = f),
+                child: Text(f),
               );
             },
           ),
         ),
-        const Divider(),
+      ),
+    );
 
-        // รายการออเดอร์
+    return Column(
+      children: [
+        header,
+        filterBar,
+        const Padding(
+          padding: EdgeInsets.only(top: 4),
+          child: Divider(height: 16),
+        ),
         Expanded(
           child: StreamBuilder<List<OrderModel>>(
             stream: OrderService.instance.watchAll(status: selectedStatus),
@@ -111,58 +148,103 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
               }
 
               return ListView.separated(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
                 itemCount: orders.length,
                 separatorBuilder: (_, __) => const SizedBox(height: 12),
                 itemBuilder: (_, i) {
                   final o = orders[i];
-                  final color = statusColor(o.status);
+                  final sc = statusColor(o.status);
 
                   return Card(
-                    child: ListTile(
-                      leading: const Icon(Icons.receipt_long),
-                      title: Text('ออเดอร์ #${o.id}'),
-                      subtitle: Wrap(
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        spacing: 10,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 4),
+                    elevation: 0, // ไม่ใส่เงาหนัก การ์ดดูเนียน
+                    color: theme.colorScheme.surface,
+                    surfaceTintColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10), // การ์ด 10px
+                      side: BorderSide(color: Colors.grey.shade200),
+                    ),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => _openDetail(context, o),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 2),
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 6),
+                          leading: Container(
+                            width: 44,
+                            height: 44,
                             decoration: BoxDecoration(
-                              color: color.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(999),
-                              border: Border.all(color: color),
+                              color: sc.withOpacity(.08),
+                              borderRadius:
+                                  BorderRadius.circular(8), // รูป/ไอคอน 8px
                             ),
-                            child: Text(
-                              statusThai(o.status),
-                              style: TextStyle(
-                                  color: color, fontWeight: FontWeight.w600),
+                            child: Icon(Icons.receipt_long, color: sc),
+                          ),
+                          title: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'ออเดอร์ #${o.id}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.titleSmall
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                              // ราคาเป็นแคปซูลโทน primary จาง ๆ
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: primary.withOpacity(.06),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  '฿${o.grandTotal.toStringAsFixed(0)}',
+                                  style: theme.textTheme.labelMedium?.copyWith(
+                                    color: primary.withOpacity(.85),
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          subtitle: Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Wrap(
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 10,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: sc.withOpacity(0.08),
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(color: sc),
+                                  ),
+                                  child: Text(
+                                    statusThai(o.status),
+                                    style: TextStyle(
+                                      color: sc,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12.5,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  'วันที่สั่ง: ${o.createdAt}',
+                                  style: const TextStyle(
+                                      fontSize: 12.5, color: Colors.black54),
+                                ),
+                              ],
                             ),
                           ),
-                          Text('วันที่สั่ง: ${o.createdAt}',
-                              style: const TextStyle(fontSize: 12.5)),
-                        ],
+                          trailing: const Icon(Icons.chevron_right),
+                        ),
                       ),
-                      trailing: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text('฿${o.grandTotal.toStringAsFixed(0)}'),
-                          // ปุ่มลัดเริ่มแชร์ (เฉพาะกำลังจัดส่ง)
-                          if (o.status == OrderStatus.delivering)
-                            TextButton.icon(
-                              icon: const Icon(Icons.play_arrow, size: 18),
-                              onPressed: () => _startShareFromList(context, o),
-                              label: const Text('แชร์พิกัด'),
-                              style: TextButton.styleFrom(
-                                padding: EdgeInsets.zero,
-                                visualDensity: VisualDensity.compact,
-                              ),
-                            ),
-                        ],
-                      ),
-                      onTap: () => _openDetail(context, o),
                     ),
                   );
                 },
@@ -174,36 +256,17 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
     );
   }
 
-  Future<void> _startShareFromList(BuildContext context, OrderModel o) async {
-    try {
-      final uid = FirebaseAuth.instance.currentUser?.uid;
-      if (uid == null) throw 'ยังไม่ได้เข้าสู่ระบบ';
-
-      // ตั้ง admin คนนี้เป็น driverId (เพื่อให้ Rules อนุญาตเขียนพิกัด)
-      await FirebaseFirestore.instance.collection('orders').doc(o.id).update({
-        'driverId': uid,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-
-      await DriverLocationService.instance.startTrackingOrder(o.id);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('เริ่มแชร์ตำแหน่งสำหรับออเดอร์นี้')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('เริ่มแชร์ไม่สำเร็จ: $e')));
-    }
-  }
-
   Future<void> _openDetail(BuildContext context, OrderModel o) async {
     await showModalBottomSheet(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
       builder: (_) => _AdminOrderDetail(
         order: o,
-        // อนุญาตทุกสถานะ (แอดมินกดข้ามลำดับได้)
         allowedNext: OrderStatus.values.toList(),
         onChangeStatus: (to, {String? reason}) async {
           try {
@@ -215,8 +278,7 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
               SnackBar(
                   content: Text('อัปเดตสถานะเป็น "${statusThai(to)}" สำเร็จ')),
             );
-          } catch (e, st) {
-            debugPrint('🔥 UPDATE ERROR: $e\n$st');
+          } catch (e) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('อัปเดตล้มเหลว: $e')),
             );
@@ -243,8 +305,6 @@ class _AdminOrderDetail extends StatefulWidget {
 }
 
 class _AdminOrderDetailState extends State<_AdminOrderDetail> {
-  bool _tracking = false;
-
   String statusThai(OrderStatus s) => switch (s) {
         OrderStatus.pending => 'รอชำระ',
         OrderStatus.paid => 'ชำระแล้ว',
@@ -254,8 +314,24 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
         OrderStatus.cancelled => 'ยกเลิก',
       };
 
-  // ---------- Helpers (UI) ----------
   String _money(num n) => '฿${n.toStringAsFixed(0)}';
+
+  Widget _secHeader(IconData icon, String text) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 8),
+      child: Row(
+        children: [
+          Icon(icon,
+              size: 16, color: theme.colorScheme.onSurface.withOpacity(.7)),
+          const SizedBox(width: 6),
+          Text(text,
+              style: theme.textTheme.titleSmall
+                  ?.copyWith(fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
 
   Widget _totalRow(String label, String value, {bool bold = false}) {
     final style = TextStyle(
@@ -277,7 +353,7 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         ClipRRect(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(8), // รูปโค้ง 8px
           child: l.imageUrl.isNotEmpty
               ? Image.network(l.imageUrl,
                   width: 48, height: 48, fit: BoxFit.cover)
@@ -305,46 +381,66 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
       ],
     );
   }
-  // -----------------------------------
 
   Future<void> _assignMeAsDriver(String orderId) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) throw 'ยังไม่ได้เข้าสู่ระบบ';
-    await FirebaseFirestore.instance.collection('orders').doc(orderId).update({
+    await FirebaseFirestore.instance.collection('orders').doc(orderId).set({
       'driverId': uid,
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true));
   }
 
   Future<void> _startShare() async {
     final id = widget.order.id;
     await _assignMeAsDriver(id);
-    await DriverLocationService.instance.startTrackingOrder(id);
+    await FirebaseFirestore.instance.collection('orders').doc(id).set({
+      'driverSharing': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    try {
+      await DriverLocationService.instance.startTrackingOrder(id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('เริ่มแชร์ตำแหน่งแล้ว')),
+        );
+      }
+    } catch (e) {
+      await FirebaseFirestore.instance.collection('orders').doc(id).set({
+        'driverSharing': false,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('เริ่มแชร์ไม่สำเร็จ: $e')));
+      }
+    }
+  }
+
+  Future<void> _stopShare() async {
+    final id = widget.order.id;
+    try {
+      DriverLocationService.instance.stop();
+    } finally {
+      await FirebaseFirestore.instance.collection('orders').doc(id).set({
+        'driverSharing': false,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }
     if (mounted) {
-      setState(() => _tracking = true);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('เริ่มแชร์ตำแหน่งแล้ว')),
+        const SnackBar(content: Text('หยุดแชร์ตำแหน่งแล้ว')),
       );
     }
   }
 
-  void _stopShare() {
-    DriverLocationService.instance.stop();
-    setState(() => _tracking = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('หยุดแชร์ตำแหน่งแล้ว')),
-    );
-  }
-
-  @override
-  void dispose() {
-    DriverLocationService.instance.stop();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final primary = theme.colorScheme.primary;
     final o = widget.order;
+
     return SafeArea(
       child: Padding(
         padding: EdgeInsets.only(
@@ -357,8 +453,30 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('ออเดอร์ #${o.id}',
-                  style: Theme.of(context).textTheme.titleLarge),
+              // หัวเรื่องใบสั่งซื้อ + ราคาเป็นแคปซูล primary จางๆ
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('ออเดอร์ #${o.id}',
+                        style: theme.textTheme.titleLarge),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: primary.withOpacity(.06),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      _money(o.grandTotal),
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        color: primary.withOpacity(.85),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 8),
               Text('สถานะปัจจุบัน: ${statusThai(o.status)}'),
               if (o.addressText.isNotEmpty) Text('ที่อยู่: ${o.addressText}'),
@@ -366,10 +484,7 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
                 Text('การชำระเงิน: ${o.paymentText}'),
               const SizedBox(height: 12),
 
-              // ===== รายการสินค้า =====
-              const Text('รายการสินค้า',
-                  style: TextStyle(fontWeight: FontWeight.w700)),
-              const SizedBox(height: 8),
+              _secHeader(Icons.shopping_bag_outlined, 'รายการสินค้า'),
               ListView.separated(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
@@ -379,7 +494,7 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
               ),
               const SizedBox(height: 12),
 
-              // ===== สรุปยอด =====
+              // กล่องสรุปยอด: มน 12 ขอบจาง ๆ
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -399,104 +514,70 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
               ),
               const SizedBox(height: 12),
 
-              // ===== ปรับสถานะ =====
               if (widget.allowedNext.isEmpty)
                 const Text('ออเดอร์นี้ปิดงานแล้ว ไม่สามารถแก้ไขสถานะได้',
                     style: TextStyle(color: Colors.grey))
-              else
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('ปรับสถานะ:'),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: _buildStatusChips(context),
-                    ),
-                  ],
+              else ...[
+                _secHeader(Icons.flag_circle_outlined, 'ปรับสถานะ'),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _buildStatusChips(context),
                 ),
-
-              const SizedBox(height: 12),
-
-              // ปุ่มลัด
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  if (widget.allowedNext.contains(OrderStatus.preparing))
-                    OutlinedButton.icon(
-                      onPressed: () =>
-                          widget.onChangeStatus(OrderStatus.preparing),
-                      icon: const Icon(Icons.warehouse),
-                      label: const Text('เริ่มเตรียมสินค้า'),
-                    ),
-                  if (widget.allowedNext.contains(OrderStatus.delivering))
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        // เปลี่ยนสถานะ + ตั้ง admin เป็น driver แล้วเริ่มแชร์เลย
-                        await widget.onChangeStatus(OrderStatus.delivering);
-                        await _assignMeAsDriver(o.id);
-                        await _startShare();
-                      },
-                      icon: const Icon(Icons.local_shipping),
-                      label: const Text('เริ่มจัดส่ง & แชร์พิกัด'),
-                    ),
-                  if (widget.allowedNext.contains(OrderStatus.completed))
-                    FilledButton.icon(
-                      onPressed: () =>
-                          widget.onChangeStatus(OrderStatus.completed),
-                      icon: const Icon(Icons.done_all),
-                      label: const Text('ทำเครื่องหมาย “เสร็จสิ้น”'),
-                    ),
-                  if (widget.allowedNext.contains(OrderStatus.cancelled))
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        final reason = await _askCancelReason(context);
-                        if (reason == null) return;
-                        await widget.onChangeStatus(OrderStatus.cancelled,
-                            reason: reason);
-                      },
-                      icon: const Icon(Icons.cancel),
-                      label: const Text('ยกเลิกออเดอร์'),
-                    ),
-                ],
-              ),
+              ],
 
               const SizedBox(height: 12),
               const Divider(),
 
-              // ===== โหมดไรเดอร์ (ฝั่งแอดมิน) แชร์ตำแหน่ง =====
-              Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed:
-                          (o.status == OrderStatus.delivering && !_tracking)
-                              ? _startShare
-                              : null,
-                      icon: const Icon(Icons.play_arrow),
-                      label: const Text('เริ่มแชร์ตำแหน่ง'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton.tonalIcon(
-                      onPressed: _tracking ? _stopShare : null,
-                      icon: const Icon(Icons.stop),
-                      label: const Text('หยุดแชร์'),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                (o.status == OrderStatus.delivering)
-                    ? 'แชร์พิกัดจากอุปกรณ์แอดมินนี้ไปยังผู้ใช้แบบเรียลไทม์'
-                    : 'ต้องอยู่สถานะ "กำลังจัดส่ง" จึงจะเริ่มแชร์พิกัดได้',
-                style: const TextStyle(color: Colors.black54, fontSize: 12.5),
-              ),
+              // แชร์ตำแหน่งไรเดอร์: ปุ่มคู่วางในแถว
+              _secHeader(Icons.location_searching, 'แชร์ตำแหน่งผู้ส่ง'),
+              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: FirebaseFirestore.instance
+                    .collection('orders')
+                    .doc(o.id)
+                    .snapshots(),
+                builder: (context, snap) {
+                  final data = snap.data?.data();
+                  final sharing = (data?['driverSharing'] == true);
+                  final canStart =
+                      o.status == OrderStatus.delivering && !sharing;
 
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: canStart ? _startShare : null,
+                              icon: const Icon(Icons.play_arrow),
+                              label: const Text('เริ่มแชร์ตำแหน่ง'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: FilledButton.tonalIcon(
+                              onPressed: sharing ? _stopShare : null,
+                              icon: const Icon(Icons.stop),
+                              label: const Text('หยุดแชร์'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        sharing
+                            ? 'กำลังแชร์พิกัดจากอุปกรณ์นี้...'
+                            : (o.status == OrderStatus.delivering
+                                ? 'แตะ “เริ่มแชร์ตำแหน่ง” เพื่อส่งพิกัดเรียลไทม์'
+                                : 'ต้องอยู่สถานะ "กำลังจัดส่ง" จึงจะเริ่มแชร์พิกัดได้'),
+                        style: const TextStyle(
+                            color: Colors.black54, fontSize: 12.5),
+                      ),
+                    ],
+                  );
+                },
+              ),
               const SizedBox(height: 8),
             ],
           ),
@@ -529,7 +610,7 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
 
     return sequence.map((s) {
       final isCurrent = s == current;
-      final canGo = next.contains(s); // ตอนนี้ next = ทุกสถานะ (force)
+      final canGo = next.contains(s);
       final border = isCurrent ? Colors.green : colorOf(s);
 
       return ChoiceChip(
@@ -574,7 +655,10 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
         title: const Text('เหตุผลการยกเลิก'),
         content: TextField(
           controller: ctl,
-          decoration: const InputDecoration(hintText: 'ใส่เหตุผล...'),
+          decoration: const InputDecoration(
+            hintText: 'ใส่เหตุผล...',
+            border: OutlineInputBorder(),
+          ),
           maxLines: 2,
         ),
         actions: [

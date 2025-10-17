@@ -5,6 +5,11 @@ import 'package:intl/intl.dart';
 class AdminDashboardTab extends StatelessWidget {
   const AdminDashboardTab({super.key});
 
+  // ---- design tokens ----
+  static const double _rCard = 10; // card radius 10px
+  static const double _rImage = 8; // image/icon radius 8px
+  static const double _gap = 12;
+
   // ---- Day range (local) ----
   DateTime get _startOfToday {
     final now = DateTime.now();
@@ -43,7 +48,7 @@ class AdminDashboardTab extends StatelessWidget {
     return null;
   }
 
-  // โหลดออเดอร์ก้อนใหญ่ แล้วคำนวณใน client
+  // ---- Load recent orders ----
   Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _recentOrdersAll(
       {int limit = 500}) {
     final db = FirebaseFirestore.instance;
@@ -55,14 +60,12 @@ class AdminDashboardTab extends StatelessWidget {
         .map((s) => s.docs);
   }
 
-  // ---- Read helpers (ทนทาน) ----
+  // ---- Robust readers ----
   num _readTotal(Map<String, dynamic> m) {
     dynamic v = m['total'] ?? m['grandTotal'] ?? m['amount'];
-    // เผื่อเก็บไว้ใต้ nested objects
     v ??= (m['summary'] is Map ? (m['summary']['total']) : null);
     v ??= (m['payment'] is Map ? (m['payment']['total']) : null);
 
-    // ถ้าไม่มี total ให้รวมจาก items[]
     if (v == null && m['items'] is List) {
       num sum = 0;
       for (final it in (m['items'] as List)) {
@@ -102,14 +105,15 @@ class AdminDashboardTab extends StatelessWidget {
       (m['customerName'] ?? m['customer'] ?? m['userName'] ?? 'ไม่ระบุ')
           .toString();
 
-  Color _statusColor(String status) {
+  Color _statusColor(ThemeData theme, String status) {
+    final pri = theme.colorScheme.primary;
     switch (status) {
       case 'รอชำระ':
       case 'pending':
         return Colors.grey;
       case 'ชำระแล้ว':
       case 'paid':
-        return Colors.blue;
+        return pri.withOpacity(.75);
       case 'กำลังเตรียม':
       case 'preparing':
         return Colors.orange;
@@ -129,6 +133,7 @@ class AdminDashboardTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final thb = NumberFormat.currency(locale: 'th_TH', symbol: '฿');
     final startMs = _startOfToday.millisecondsSinceEpoch;
     final endMs = _endOfToday.millisecondsSinceEpoch;
@@ -142,7 +147,6 @@ class AdminDashboardTab extends StatelessWidget {
         final loading = snap.connectionState == ConnectionState.waiting;
         final docs = snap.data ?? [];
 
-        // --- KPI: คำสั่งซื้อวันนี้ (createdAt ภายในวัน) ---
         final ordersTodayCount = docs.where((d) {
           final ts = _pickCreatedTs(d.data());
           if (ts == null) return false;
@@ -150,136 +154,191 @@ class AdminDashboardTab extends StatelessWidget {
           return ms >= startMs && ms < endMs;
         }).length;
 
-        // --- KPI: ยอดขายรวมวันนี้ (completed + completedAt ภายในวัน; ถ้าไม่มี completedAt ให้ fallback createdAt) ---
         num salesToday = 0;
         for (final d in docs) {
           final data = d.data();
           if (!_isCompleted(_readStatus(data))) continue;
-
           Timestamp? ts = _pickCompletedTs(data);
-          ts ??=
-              _pickCreatedTs(data); // fallback กรณีเอกสารเก่าไม่มี completedAt
-
+          ts ??= _pickCreatedTs(data);
           if (ts == null) continue;
           final ms = ts.millisecondsSinceEpoch;
           if (ms < startMs || ms >= endMs) continue;
-
           salesToday += _readTotal(data);
         }
+
+        final pri = theme.colorScheme.primary;
+        final faintPri = pri.withOpacity(.06);
 
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
             if (loading) const LinearProgressIndicator(minHeight: 2),
 
-            // KPIs
+            // ===== KPIs =====
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  Icon(Icons.dashboard_customize_rounded,
+                      size: 18, color: Colors.black54),
+                  const SizedBox(width: 6),
+                  Text('ภาพรวมวันนี้', style: theme.textTheme.titleMedium),
+                ],
+              ),
+            ),
             Wrap(
-              spacing: 12,
-              runSpacing: 12,
+              spacing: _gap,
+              runSpacing: _gap,
               children: [
                 _KpiCard(
                   title: 'ยอดขายรวมวันนี้',
                   value: thb.format(salesToday),
                   icon: Icons.payments_outlined,
-                  color: Colors.green.shade50,
+                  color: faintPri,
+                  elevation: 1,
+                  radius: _rCard,
                 ),
                 _KpiCard(
                   title: 'คำสั่งซื้อวันนี้',
                   value: '$ordersTodayCount',
                   icon: Icons.receipt_long_outlined,
-                  color: Colors.blue.shade50,
+                  color: Colors.blue.withOpacity(.06),
+                  elevation: 1,
+                  radius: _rCard,
                 ),
               ],
             ),
 
             const SizedBox(height: 16),
 
-            // Recent Orders (เดิม)
+            // ===== Recent Orders =====
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  Icon(Icons.history_rounded, size: 18, color: Colors.black54),
+                  const SizedBox(width: 6),
+                  Text('คำสั่งซื้อล่าสุด', style: theme.textTheme.titleMedium),
+                ],
+              ),
+            ),
             Card(
-              elevation: 0,
+              elevation: 1,
+              shadowColor: Colors.black12,
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16)),
+                  borderRadius: BorderRadius.circular(_rCard)),
               child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Text('คำสั่งซื้อล่าสุด',
-                            style: Theme.of(context).textTheme.titleMedium),
-                        const Spacer(),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    if (docs.isEmpty)
-                      const Padding(
+                padding:
+                    const EdgeInsets.fromLTRB(16, 16, 16, 14), // กันชายล่างนิด
+                child: docs.isEmpty
+                    ? const Padding(
                         padding: EdgeInsets.symmetric(vertical: 24),
                         child: Center(child: Text('ยังไม่มีคำสั่งซื้อ')),
                       )
-                    else
-                      ListView.separated(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        itemCount: docs.length,
-                        separatorBuilder: (_, __) => const Divider(height: 1),
-                        itemBuilder: (_, i) {
-                          final data = docs[i].data();
-                          final id = docs[i].id;
-                          final total = _readTotal(data);
-                          final status = _readStatus(data);
-                          final ts =
-                              _pickCreatedTs(data) ?? _pickCompletedTs(data);
-                          final dt = ts?.toDate();
-                          final c = _statusColor(status);
+                    : Column(
+                        children: [
+                          ListView.separated(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: docs.length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 1, thickness: .5),
+                            itemBuilder: (_, i) {
+                              final data = docs[i].data();
+                              final id = docs[i].id;
+                              final total = _readTotal(data);
+                              final status = _readStatus(data);
+                              final ts = _pickCreatedTs(data) ??
+                                  _pickCompletedTs(data);
+                              final dt = ts?.toDate();
+                              final c = _statusColor(theme, status);
 
-                          return ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: CircleAvatar(
-                              backgroundColor: c.withOpacity(.15),
-                              child:
-                                  Icon(Icons.shopping_bag_outlined, color: c),
-                            ),
-                            title: Text('$id • ${_readCustomer(data)}'),
-                            subtitle: Text(
-                              dt != null
-                                  ? DateFormat('dd/MM/yyyy HH:mm').format(dt)
-                                  : '—',
-                            ),
-                            trailing: Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(thb.format(total)),
-                                const SizedBox(height: 4),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: c.withOpacity(.12),
-                                    borderRadius: BorderRadius.circular(999),
+                              return ListTile(
+                                contentPadding:
+                                    const EdgeInsets.fromLTRB(0, 6, 0, 10),
+                                isThreeLine: true,
+                                minVerticalPadding: 10,
+                                leading: ClipRRect(
+                                  borderRadius: BorderRadius.circular(_rImage),
+                                  child: Container(
+                                    width: 44,
+                                    height: 44,
+                                    alignment: Alignment.center,
+                                    color: c.withOpacity(.10),
+                                    child: Icon(Icons.shopping_bag_outlined,
+                                        color: c),
                                   ),
-                                  child: Text(status,
-                                      style: TextStyle(color: c, fontSize: 12)),
                                 ),
-                              ],
-                            ),
-                          );
-                        },
+                                title: Text(
+                                  '$id • ${_readCustomer(data)}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: Text(
+                                  dt != null
+                                      ? DateFormat('dd/MM/yyyy HH:mm')
+                                          .format(dt)
+                                      : '—',
+                                  style: theme.textTheme.bodySmall
+                                      ?.copyWith(color: Colors.black54),
+                                ),
+                                // >>> ป้องกัน overflow: บังคับความสูงฝั่งขวาเท่า 44px <<<
+                                trailing: SizedBox(
+                                  height: 44,
+                                  child: Column(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      Text(
+                                        thb.format(total),
+                                        style:
+                                            theme.textTheme.bodyLarge?.copyWith(
+                                          color: pri.withOpacity(.90),
+                                          fontWeight: FontWeight.w700,
+                                          height: 1.0,
+                                        ),
+                                      ),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 8, vertical: 1),
+                                        decoration: BoxDecoration(
+                                          color: c.withOpacity(.10),
+                                          borderRadius:
+                                              BorderRadius.circular(999),
+                                          border: Border.all(
+                                              color: c.withOpacity(.25),
+                                              width: .5),
+                                        ),
+                                        child: Text(
+                                          status,
+                                          style: TextStyle(
+                                            color: c,
+                                            fontSize: 12,
+                                            height: 1.0,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                          const SizedBox(
+                              height: 2), // กัน clipping ชายล่าง card
+                        ],
                       ),
-                  ],
-                ),
               ),
             ),
 
-            // (optional) debug – เอาไว้ช่วงเทส แล้วค่อยลบออก
+            // debug (ลบได้)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                'debug: today orders=$ordersTodayCount, sales=${thb.format(salesToday)} '
-                'range=${DateFormat("dd/MM HH:mm").format(_startOfToday)}–${DateFormat("dd/MM HH:mm").format(_endOfToday)}',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
+                'debug: today range ${DateFormat("dd/MM HH:mm").format(_startOfToday)}–'
+                '${DateFormat("dd/MM HH:mm").format(_endOfToday)}',
+                style: theme.textTheme.bodySmall
                     ?.copyWith(color: Colors.grey[600]),
               ),
             ),
@@ -295,40 +354,58 @@ class _KpiCard extends StatelessWidget {
   final String value;
   final IconData icon;
   final Color color;
-  const _KpiCard(
-      {required this.title,
-      required this.value,
-      required this.icon,
-      required this.color});
+  final double elevation;
+  final double radius;
+
+  const _KpiCard({
+    required this.title,
+    required this.value,
+    required this.icon,
+    required this.color,
+    this.elevation = 1,
+    this.radius = 10,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final pri = theme.colorScheme.primary;
+
     return SizedBox(
       width: 280,
       child: Card(
         color: color,
-        elevation: 0,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        elevation: elevation,
+        shadowColor: Colors.black12,
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius)),
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Row(
             children: [
-              CircleAvatar(
-                  backgroundColor: Colors.white,
-                  child: Icon(icon, color: Colors.black87)),
+              Container(
+                width: 40,
+                height: 40,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, color: Colors.black87),
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title, style: Theme.of(context).textTheme.labelMedium),
+                    Text(title, style: theme.textTheme.labelMedium),
                     const SizedBox(height: 6),
                     Text(
                       value,
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleLarge
-                          ?.copyWith(fontWeight: FontWeight.bold),
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: pri.withOpacity(.95),
+                      ),
                     ),
                   ],
                 ),
@@ -348,6 +425,9 @@ class _ErrorTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       color: Colors.red.shade50,
+      elevation: 1,
+      shadowColor: Colors.black12,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       child: ListTile(
         leading: const Icon(Icons.error_outline, color: Colors.red),
         title: const Text('เกิดข้อผิดพลาด'),

@@ -15,38 +15,21 @@ class CatalogTab extends StatelessWidget {
     String selected = cats.first;
     String query = '';
 
+    final cs = Theme.of(context).colorScheme;
+
     return StatefulBuilder(
       builder: (ctx, setSt) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ค้นหา
+          // หัวข้อ + ไอคอนเล็ก ๆ
           Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              decoration: const InputDecoration(
-                hintText: 'ค้นหาสินค้า/แบรนด์...',
-                prefixIcon: Icon(Icons.search),
-              ),
-              onChanged: (v) => setSt(() => query = v.trim()),
-            ),
-          ),
-
-          // ปุ่มช่วยดีบัก / ยิงสินค้าทดสอบ
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: Row(
               children: [
-                TextButton.icon(
-                  icon: const Icon(Icons.add),
-                  label: const Text('เพิ่มสินค้าเดโม่'),
-                  onPressed: () async {
-                    await ProductService.instance.seedDemo();
-                    if (ctx.mounted) {
-                      ScaffoldMessenger.of(ctx).showSnackBar(
-                        const SnackBar(content: Text('เพิ่มสินค้าทดสอบแล้ว')),
-                      );
-                    }
-                  },
-                ),
+                Icon(Icons.storefront, size: 18, color: cs.primary),
+                const SizedBox(width: 8),
+                Text('แคตตาล็อกสินค้า',
+                    style: Theme.of(context).textTheme.titleMedium),
                 const Spacer(),
                 IconButton(
                   tooltip: 'รีโหลด',
@@ -57,31 +40,57 @@ class CatalogTab extends StatelessWidget {
             ),
           ),
 
-          // หมวดหมู่จริง (ชื่อใน Firestore ต้องตรงกับชิป)
+          // ค้นหา — กล่องเรียบ เงาบาง ๆ
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Material(
+              elevation: 1,
+              shadowColor: Colors.black12,
+              borderRadius: BorderRadius.circular(10),
+              child: TextField(
+                decoration: InputDecoration(
+                  hintText: 'ค้นหาสินค้า/แบรนด์...',
+                  prefixIcon: const Icon(Icons.search),
+                  border: OutlineInputBorder(
+                    borderSide: BorderSide.none,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  filled: true,
+                  fillColor: cs.surface,
+                  isDense: true,
+                ),
+                onChanged: (v) => setSt(() => query = v.trim()),
+              ),
+            ),
+          ),
+
+          const Divider(height: 24),
+
+          // หมวดหมู่: OutlinedButton เส้นจาง มน 8px
           SizedBox(
-            height: 44,
+            height: 42,
             child: ListView.separated(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               scrollDirection: Axis.horizontal,
               itemBuilder: (_, i) {
                 final c = cats[i];
                 final sel = c == selected;
-                return ChoiceChip(
-                  label: Text(c),
-                  selected: sel,
-                  onSelected: (_) => setSt(() => selected = c),
-                  labelStyle: const TextStyle(
-                    color: Colors.black,
-                    fontWeight: FontWeight.w600,
+                return OutlinedButton(
+                  onPressed: () => setSt(() => selected = c),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: sel ? cs.primary : cs.onSurface,
+                    side: BorderSide(
+                      color: sel ? cs.primary : cs.outlineVariant,
+                      width: sel ? 1.6 : 1,
+                    ),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
                   ),
-                  backgroundColor: Colors.white,
-                  selectedColor: Colors.white,
-                  side: BorderSide(
-                    color: sel ? Colors.green : Colors.grey.shade400,
-                    width: sel ? 2 : 1,
-                  ),
-                  shape: const StadiumBorder(),
-                  visualDensity: VisualDensity.compact,
+                  child: Text(c,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
                 );
               },
               separatorBuilder: (_, __) => const SizedBox(width: 8),
@@ -91,10 +100,12 @@ class CatalogTab extends StatelessWidget {
 
           const SizedBox(height: 8),
 
-          // ✅ สินค้าจาก Firestore (กรองตามหมวดตั้งแต่ฝั่งเซิร์ฟเวอร์)
+          // ✅ เลือกสตรีมตามหมวด: 'ทั้งหมด' -> watchAll(), อื่น ๆ -> watchByCategory
           Expanded(
             child: StreamBuilder<List<Product>>(
-              stream: ProductService.instance.watchByCategory(selected),
+              stream: selected == 'ทั้งหมด'
+                  ? ProductService.instance.watchAll()
+                  : ProductService.instance.watchByCategory(selected),
               builder: (context, snap) {
                 if (snap.hasError) {
                   return _ErrorState(
@@ -109,15 +120,13 @@ class CatalogTab extends StatelessWidget {
 
                 var items = snap.data ?? [];
 
-                // กรองด้วยข้อความค้นหา (ชื่อ/sku) ฝั่งแอป
+                // กรองค้นหา (ชื่อ/sku)
                 if (query.isNotEmpty) {
                   final q = query.toLowerCase();
                   items = items
-                      .where(
-                        (p) =>
-                            p.name.toLowerCase().contains(q) ||
-                            (p.sku ?? '').toLowerCase().contains(q),
-                      )
+                      .where((p) =>
+                          p.name.toLowerCase().contains(q) ||
+                          (p.sku ?? '').toLowerCase().contains(q))
                       .toList();
                 }
 
@@ -125,8 +134,8 @@ class CatalogTab extends StatelessWidget {
                   return _EmptyState(
                     title: selected == 'ทั้งหมด'
                         ? (query.isEmpty
-                              ? 'ยังไม่มีสินค้า'
-                              : 'ไม่พบสินค้าที่ตรงกับการค้นหา')
+                            ? 'ยังไม่มีสินค้า'
+                            : 'ไม่พบสินค้าที่ตรงกับการค้นหา')
                         : 'ไม่พบสินค้าในหมวด "$selected"',
                     onRetry: () => setSt(() => query = ''),
                   );
@@ -135,57 +144,12 @@ class CatalogTab extends StatelessWidget {
                 return RefreshIndicator(
                   onRefresh: () async => setSt(() {}),
                   child: ListView.separated(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                     itemCount: items.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
                     itemBuilder: (_, i) {
                       final product = items[i];
-
-                      return Card(
-                        child: ListTile(
-                          leading: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: product.imageUrl.isNotEmpty
-                                ? CachedNetworkImage(
-                                    imageUrl: product.imageUrl,
-                                    width: 56,
-                                    height: 56,
-                                    fit: BoxFit.cover,
-                                    placeholder: (_, __) => const SizedBox(
-                                      width: 56,
-                                      height: 56,
-                                      child: Center(
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      ),
-                                    ),
-                                    errorWidget: (_, __, ___) =>
-                                        const Icon(Icons.broken_image),
-                                  )
-                                : const Icon(Icons.inventory_2),
-                          ),
-                          title: Text(product.name),
-                          subtitle: Text(
-                            '฿${product.price.toStringAsFixed(2)}',
-                          ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.add_circle_outline),
-                            onPressed: () {
-                              context.read<CartProvider>().add(product);
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    'เพิ่ม "${product.name}" เข้าตะกร้าแล้ว',
-                                  ),
-                                  duration: const Duration(milliseconds: 900),
-                                  behavior: SnackBarBehavior.floating,
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      );
+                      return _ProductCardMinimal(product: product);
                     },
                   ),
                 );
@@ -198,8 +162,123 @@ class CatalogTab extends StatelessWidget {
   }
 }
 
-// ---------------- UI States ----------------
+/// ---- การ์ดสินค้าแบบคลีน ดูมือทำ ----
+class _ProductCardMinimal extends StatelessWidget {
+  final Product product;
+  const _ProductCardMinimal({required this.product});
 
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () {}, // เผื่อไปหน้า detail ภายหลัง
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Row(
+            children: [
+              _Thumb(url: product.imageUrl, size: 64, radius: 8),
+              const SizedBox(width: 12),
+              Expanded(
+                child: DefaultTextStyle(
+                  style: Theme.of(context).textTheme.bodyMedium!,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(product.name,
+                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                      const SizedBox(height: 4),
+                      Text(
+                        '฿${product.price.toStringAsFixed(2)}',
+                        style: TextStyle(
+                          color: cs.primary.withOpacity(0.9),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if ((product.sku ?? '').isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          'SKU: ${product.sku}',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: cs.outline),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                height: 36,
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.add_shopping_cart, size: 18),
+                  label: const Text('ใส่ตะกร้า'),
+                  onPressed: () {
+                    context.read<CartProvider>().add(product);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('เพิ่ม "${product.name}" เข้าตะกร้าแล้ว'),
+                        duration: const Duration(milliseconds: 900),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  },
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// ---- รูปสินค้าโค้ง 8px + Placeholder เรียบ ๆ ----
+class _Thumb extends StatelessWidget {
+  final String url;
+  final double size;
+  final double radius;
+  const _Thumb({required this.url, this.size = 56, this.radius = 8});
+
+  @override
+  Widget build(BuildContext context) {
+    final ph = Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.35),
+        borderRadius: BorderRadius.circular(radius),
+      ),
+      child: const Icon(Icons.image, size: 20),
+    );
+    if (url.isEmpty) return ph;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: CachedNetworkImage(
+        imageUrl: url,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        placeholder: (_, __) => ph,
+        errorWidget: (_, __, ___) => ph,
+      ),
+    );
+  }
+}
+
+// ---------------- UI States ----------------
 class _EmptyState extends StatelessWidget {
   final String title;
   final VoidCallback onRetry;
@@ -207,15 +286,16 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.inventory_2, size: 48, color: Colors.grey),
+            Icon(Icons.inventory_2, size: 48, color: cs.outline),
             const SizedBox(height: 12),
-            Text(title, style: const TextStyle(color: Colors.grey)),
+            Text(title, style: TextStyle(color: cs.outline)),
             const SizedBox(height: 8),
             TextButton.icon(
               onPressed: onRetry,
@@ -236,18 +316,19 @@ class _ErrorState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline, size: 48, color: Colors.red),
+            Icon(Icons.error_outline, size: 48, color: cs.error),
             const SizedBox(height: 12),
             Text(
               message,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.red),
+              style: TextStyle(color: cs.error),
             ),
             const SizedBox(height: 8),
             TextButton.icon(

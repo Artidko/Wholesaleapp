@@ -25,7 +25,7 @@ dependencies:
 
   # Firebase
   firebase_core: ^3.5.0
-  cloud_firestore: ^5.4.4
+  cloud_firestore: ^5.5.0
   firebase_auth: ^5.3.1
 
   # (ถ้าเลิกใช้ Supabase แล้ว สามารถลบบรรทัดนี้ได้)
@@ -35,7 +35,7 @@ dependencies:
   image_picker: ^1.1.2
 
   # ---- GPS Order Tracking ----
-  geolocator: ^10.1.0
+  geolocator: ^11.1.0
   permission_handler: ^11.3.1
 
   # ---- OpenStreetMap via flutter_map ----
