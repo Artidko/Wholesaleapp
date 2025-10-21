@@ -1,9 +1,10 @@
+// lib/pages/admin/tabs/admin_driver_control_tab.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
+
 import '../../../services/driver_location_service.dart';
-// ถ้ามี util ขอสิทธิ์ ให้ import ด้วย
-// import '../../../utils/location_permission.dart';
 
 class AdminDriverControlTab extends StatefulWidget {
   const AdminDriverControlTab({super.key});
@@ -26,33 +27,75 @@ class _AdminDriverControlTabState extends State<AdminDriverControlTab> {
 
   Future<void> _assignMeAsDriver(String orderId) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    // ✅ ให้ชื่อฟิลด์ตรงกับ rules ของคุณ (เลือก driverUid หรือ driverId แล้วใช้ทั้งโปรเจกต์)
-    await FirebaseFirestore.instance.collection('orders').doc(orderId).update({
-      'driverUid': uid, // ถ้าใช้ driverId ให้เปลี่ยนตรงนี้ + rules ให้ตรงกัน
+    if (uid == null) throw 'ยังไม่ได้เข้าสู่ระบบ';
+    // ใช้ชื่อฟิลด์เดียวกันทั้งโปรเจ็กต์ (driverUid)
+    await FirebaseFirestore.instance.collection('orders').doc(orderId).set({
+      'driverUid': uid,
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true));
   }
 
   Future<void> _start() async {
     final id = _selectedOrderId;
     if (id == null) return;
 
-    // ถ้ามีฟังก์ชันขอสิทธิ์ให้เรียกก่อน
-    // if (!await ensureLocationPermission()) return;
+    try {
+      await _assignMeAsDriver(id);
 
-    await _assignMeAsDriver(id);
-    await DriverLocationService.instance.startTrackingOrder(
-      id,
-      alsoAppendHistory: true,
-    );
-    setState(() {}); // รีเฟรชปุ่มตาม isRunning
+      // session ใหม่ทุกครั้งที่เริ่มแชร์
+      final sessionId = const Uuid().v4();
+
+      // เปิดแฟลก + เขียน session ที่ฝั่ง user ใช้รีเซ็ตเส้นทาง
+      await FirebaseFirestore.instance.collection('orders').doc(id).set({
+        'trackingActive': true,
+        'current': {'sessionId': sessionId},
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      // เริ่มสตรีมพิกัด (service ของคุณต้องรองรับ sessionId)
+      await DriverLocationService.instance.startTrackingOrder(
+        id,
+        alsoAppendHistory: true,
+        sessionId: sessionId,
+      );
+
+      if (mounted) {
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('เริ่มแชร์ตำแหน่งแล้ว')),
+        );
+      }
+    } catch (e) {
+      // ปิดแฟลกถ้าเริ่มไม่สำเร็จ
+      await FirebaseFirestore.instance.collection('orders').doc(id).set({
+        'trackingActive': false,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('เริ่มแชร์ไม่สำเร็จ: $e')));
+      }
+    }
   }
 
-  void _stop() async {
-    await DriverLocationService.instance.stop();
-    setState(() {});
+  Future<void> _stop() async {
+    final id = _selectedOrderId;
+    try {
+      await DriverLocationService.instance.stop();
+    } finally {
+      if (id != null) {
+        await FirebaseFirestore.instance.collection('orders').doc(id).set({
+          'trackingActive': false,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+    }
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('หยุดแชร์ตำแหน่งแล้ว')),
+      );
+    }
   }
 
   @override
@@ -78,20 +121,28 @@ class _AdminDriverControlTabState extends State<AdminDriverControlTab> {
                   child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                     stream: _deliveringOrders(),
                     builder: (context, snap) {
-                      final docs = snap.data?.docs ?? [];
+                      final docs = snap.data?.docs ?? const [];
                       return DropdownButtonFormField<String>(
                         value: _selectedOrderId,
                         hint: const Text('เลือกออเดอร์ที่กำลังจัดส่ง'),
                         items: docs.map((d) {
                           final id = d.id;
                           final dest = d.data()['dest'];
-                          final desc = dest != null
-                              ? '(${(dest['lat'] as num).toStringAsFixed(4)}, ${(dest['lng'] as num).toStringAsFixed(4)})'
-                              : '';
+                          String desc = '';
+                          if (dest is Map) {
+                            final lat = (dest['lat'] as num?)?.toDouble();
+                            final lng = (dest['lng'] as num?)?.toDouble();
+                            if (lat != null && lng != null) {
+                              desc =
+                                  '(${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)})';
+                            }
+                          }
                           return DropdownMenuItem(
                             value: id,
-                            child: Text('#$id $desc',
-                                overflow: TextOverflow.ellipsis),
+                            child: Text(
+                              '#$id $desc',
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           );
                         }).toList(),
                         onChanged: (v) => setState(() => _selectedOrderId = v),
@@ -136,7 +187,7 @@ class _AdminDriverControlTabState extends State<AdminDriverControlTab> {
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
             child: Text(
-              'หมายเหตุ: เมื่อกด "เริ่มแชร์ตำแหน่ง" ระบบจะตั้ง driverUid ให้เป็นบัญชีแอดมินของอุปกรณ์นี้ และส่งพิกัดแบบเรียลไทม์ไปยังออเดอร์ที่เลือก',
+              'หมายเหตุ: เมื่อกด "เริ่มแชร์ตำแหน่ง" ระบบจะตั้ง driverUid เป็นบัญชีปัจจุบัน เปิด trackingActive และส่งพิกัดเรียลไทม์ให้เอกสารออเดอร์',
               style: TextStyle(color: Colors.black54),
             ),
           ),

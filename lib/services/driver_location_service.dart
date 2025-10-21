@@ -2,7 +2,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart'
     show kIsWeb, defaultTargetPlatform, TargetPlatform;
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 
@@ -13,26 +12,22 @@ class DriverLocationService {
   final _db = FirebaseFirestore.instance;
 
   StreamSubscription<Position>? _sub;
-  Position? _lastPos; // กัน jitter อีกชั้น
+  Position? _lastPos;
   DateTime _lastWrite = DateTime.fromMillisecondsSinceEpoch(0);
 
-  /// ให้ UI เช็คสถานะได้
+  // เก็บค่าไว้ใช้ตอน restart stream
+  String? _lastOrderId;
+  String? _sessionId;
+
   bool get isRunning => _sub != null;
 
-  /// true = นำทาง (แม่นสุด), false = แม่น/ประหยัดขึ้น
+  /// true = โหมดนำทาง, false = โหมดประหยัด
   bool navigationMode = true;
 
-  /// ขยับ >= X m จึงปล่อย event จาก sensor (ชั้นนอก)
-  int distanceFilter = 10;
-
-  /// เขียน Firestore ถี่สุดทุก ๆ X วินาที (ชั้นใน)
+  int distanceFilter = 10; // m
   Duration minWriteInterval = const Duration(seconds: 1);
-
-  /// ทิ้งจุดที่ accuracy > X m
-  double maxAcceptableAccuracyMeters = 100;
-
-  /// ขยับน้อยกว่า X m ถือว่า jitter ไม่ต้องเขียน
-  double minDisplacementToWrite = 3;
+  double maxAcceptableAccuracyMeters = 100; // m
+  double minDisplacementToWrite = 3; // m
 
   /* ---------------- Permission & Settings ---------------- */
 
@@ -55,12 +50,8 @@ class DriverLocationService {
         ? LocationAccuracy.bestForNavigation
         : LocationAccuracy.best;
 
-    // Web
     if (kIsWeb) {
-      return LocationSettings(
-        accuracy: acc,
-        distanceFilter: distanceFilter,
-      );
+      return LocationSettings(accuracy: acc, distanceFilter: distanceFilter);
     }
 
     if (defaultTargetPlatform == TargetPlatform.android) {
@@ -81,15 +72,11 @@ class DriverLocationService {
         activityType: ActivityType.automotiveNavigation,
         pauseLocationUpdatesAutomatically: false,
         showBackgroundLocationIndicator: true,
-        // ไม่ตั้ง distanceFilter เพื่อหลีกเลี่ยงพฤติกรรมต่างเวอร์ชัน
       );
     }
 
     // Desktop/อื่น ๆ
-    return LocationSettings(
-      accuracy: acc,
-      distanceFilter: distanceFilter,
-    );
+    return LocationSettings(accuracy: acc, distanceFilter: distanceFilter);
   }
 
   /* ---------------- Firestore writes ---------------- */
@@ -98,22 +85,27 @@ class DriverLocationService {
     final now = DateTime.now();
     if (now.difference(_lastWrite) < minWriteInterval) return;
 
-    // กัน jitter เพิ่ม: ถ้าแทบไม่ขยับ ไม่ต้องเขียน
     if (_lastPos != null) {
       final d = Geolocator.distanceBetween(
-          _lastPos!.latitude, _lastPos!.longitude, pos.latitude, pos.longitude);
+        _lastPos!.latitude,
+        _lastPos!.longitude,
+        pos.latitude,
+        pos.longitude,
+      );
       if (d < minDisplacementToWrite) return;
     }
     _lastWrite = now;
     _lastPos = pos;
 
     await _db.collection('orders').doc(orderId).set({
+      'trackingActive': true, // เผื่อฝั่ง admin/เว็บไม่ได้ตั้ง
       'current': {
         'lat': pos.latitude,
         'lng': pos.longitude,
         'speed': pos.speed, // m/s
-        'heading': pos.heading, // degree 0..360
+        'heading': pos.heading,
         'acc': pos.accuracy, // m
+        'sessionId': _sessionId, // ✅ เขียน session เสมอ
         'ts': FieldValue.serverTimestamp(),
       },
       'updatedAt': FieldValue.serverTimestamp(),
@@ -133,15 +125,27 @@ class DriverLocationService {
 
   /* ---------------- Public API ---------------- */
 
-  /// เริ่มแชร์พิกัดของ orderId
+  /// เริ่มแชร์พิกัดของ [orderId]
+  /// ต้องส่ง [sessionId] มาทุกครั้ง (สร้างใหม่ทุกครั้งที่กดเริ่มแชร์)
   Future<void> startTrackingOrder(
     String orderId, {
+    required String sessionId,
     bool alsoAppendHistory = false,
   }) async {
     final ok = await _ensurePermission();
     if (!ok) return;
 
-    // seed จุดแรก (กันว่าง)
+    _lastOrderId = orderId;
+    _sessionId = sessionId;
+
+    // เปิดแฟลกไว้ก่อน
+    await _db.collection('orders').doc(orderId).set({
+      'trackingActive': true,
+      'current': {'sessionId': sessionId},
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    // seed จุดแรก
     try {
       final first = await Geolocator.getCurrentPosition(
         desiredAccuracy: navigationMode
@@ -155,37 +159,32 @@ class DriverLocationService {
         if (alsoAppendHistory) await _appendTrackingPoint(orderId, first);
       }
     } catch (_) {
-      // ปล่อยให้ไปตาม stream ต่อ
+      // ปล่อยให้ไปตาม stream
     }
 
     await _sub?.cancel();
     _lastPos = null;
     _lastWrite = DateTime.fromMillisecondsSinceEpoch(0);
 
-    _sub =
-        Geolocator.getPositionStream(locationSettings: _buildSettings()).listen(
+    _sub = Geolocator.getPositionStream(
+      locationSettings: _buildSettings(),
+    ).listen(
       (pos) async {
         try {
-          // กรองตำแหน่งแย่/ผิดปกติ
           if (pos.accuracy.isNaN || pos.accuracy > maxAcceptableAccuracyMeters)
             return;
 
           await _writeOrderCurrent(orderId, pos);
 
           if (alsoAppendHistory) {
-            // เก็บเป็นช่วง ๆ เพื่อลด write
             final sec = DateTime.now().second;
             if (sec % 20 == 0 || pos.speed > 1.5) {
               await _appendTrackingPoint(orderId, pos);
             }
           }
-        } catch (_) {
-          /* อย่าให้ stream หลุด */
-        }
+        } catch (_) {/* กันสตรีมหลุด */}
       },
-      onError: (e, st) {
-        // คุณอาจใส่ log/report ที่นี่
-      },
+      onError: (e, st) {/* ใส่ log ได้ */},
       cancelOnError: false,
     );
   }
@@ -195,14 +194,25 @@ class DriverLocationService {
     await _sub?.cancel();
     _sub = null;
     _lastPos = null;
+
+    // ปิดแฟลกในเอกสารล่าสุด
+    final id = _lastOrderId;
+    if (id != null) {
+      await _db.collection('orders').doc(id).set({
+        'trackingActive': false,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }
   }
 
-  /// สลับโปรไฟล์ความแม่นยำระหว่างใช้งาน (ถ้ากำลังรันอยู่ให้ restart)
-  Future<void> setNavigationMode(bool enabled, {String? orderId}) async {
+  /// สลับความแม่นยำระหว่างงาน — ถ้ากำลังรันอยู่จะ restart ให้โดยใช้ order/session เดิม
+  Future<void> setNavigationMode(bool enabled) async {
     navigationMode = enabled;
-    if (_sub != null && orderId != null) {
+    if (_sub != null && _lastOrderId != null && _sessionId != null) {
+      final orderId = _lastOrderId!;
+      final session = _sessionId!;
       await stop();
-      await startTrackingOrder(orderId);
+      await startTrackingOrder(orderId, sessionId: session);
     }
   }
 }

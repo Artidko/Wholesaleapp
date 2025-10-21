@@ -96,17 +96,17 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
     final typeVN =
         ValueNotifier<FinanceType>(editing?.type ?? FinanceType.expense);
     final amountCtrl = TextEditingController(
-        text: isEditing ? editing!.amount.toString() : '');
+        text: isEditing ? editing.amount.toString() : '');
     final noteCtrl =
-        TextEditingController(text: isEditing ? editing!.note : '');
+        TextEditingController(text: isEditing ? editing.note : '');
     final categoryCtrl = TextEditingController(
       text: isEditing
-          ? editing!.category
+          ? editing.category
           : (typeVN.value == FinanceType.expense
               ? 'General Expense'
               : 'Manual Income'),
     );
-    DateTime picked = isEditing ? editing!.date : DateTime.now();
+    DateTime picked = isEditing ? editing.date : DateTime.now();
 
     await showDialog(
       context: context,
@@ -115,7 +115,7 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
         final theme = Theme.of(ctx);
         final primary = theme.colorScheme.primary;
 
-        Widget _typeButton(FinanceType me, String label) {
+        Widget typeButton(FinanceType me, String label) {
           final isSel = typeVN.value == me;
           return OutlinedButton(
             style: OutlinedButton.styleFrom(
@@ -178,9 +178,9 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
                     valueListenable: typeVN,
                     builder: (_, __, ___) => Row(
                       children: [
-                        _typeButton(FinanceType.expense, 'รายจ่าย'),
+                        typeButton(FinanceType.expense, 'รายจ่าย'),
                         const SizedBox(width: 8),
-                        _typeButton(FinanceType.income, 'รายรับ'),
+                        typeButton(FinanceType.income, 'รายรับ'),
                       ],
                     ),
                   ),
@@ -274,10 +274,10 @@ class _AdminFinanceTabState extends State<AdminFinanceTab> {
 
                           final t = typeVN.value;
                           final entry = FinanceEntry(
-                            id: isEditing ? editing!.id : '',
+                            id: isEditing ? editing.id : '',
                             type: t,
                             amount: amt,
-                            orderId: isEditing ? editing!.orderId : null,
+                            orderId: isEditing ? editing.orderId : null,
                             category: categoryCtrl.text.trim().isEmpty
                                 ? (t == FinanceType.expense
                                     ? 'General Expense'

@@ -1,18 +1,18 @@
+// lib/main.dart
 import 'dart:async';
 import 'dart:ui';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 // Firebase
 import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart'; // ต้องมีไฟล์นี้จาก `flutterfire configure`
+import 'firebase_options.dart';
 
-// Supabase (เก็บรูป)
+// Supabase (เก็บสลิป)
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+// Theme & Providers
 import 'theme/app_theme.dart';
-// ถ้าจะใช้ Provider
 import 'providers/cart_provider.dart';
 
 // Pages
@@ -29,11 +29,11 @@ Future<void> main() async {
   // ---------- Global error handling ----------
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.presentError(details);
-    // ส่ง log ไปที่ service/analytics ของคุณได้ที่นี่
+    // TODO: ส่ง log ไป analytics/service ของคุณ
   };
   PlatformDispatcher.instance.onError = (error, stack) {
-    // ส่ง log ไปที่ service/analytics ของคุณได้ที่นี่
-    return true; // ป้องกันแอป crash บน release
+    // TODO: ส่ง log ไป analytics/service ของคุณ
+    return true; // กันแอป crash บน release
   };
 
   // ---------- Firebase ----------
@@ -42,7 +42,7 @@ Future<void> main() async {
   );
 
   // ---------- Supabase ----------
-  // แนะนำให้ย้าย URL/KEY ไปที่ --dart-define สำหรับ production (ดูคอมเมนต์ด้านล่าง)
+  // แนะนำใช้ --dart-define บน production (ตัวอย่างอยู่ด้านล่าง)
   const supabaseUrl = String.fromEnvironment('SUPABASE_URL',
       defaultValue: 'https://sajuhewvozglzwmjbhbf.supabase.co');
   const supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY',
@@ -57,8 +57,7 @@ Future<void> main() async {
   runZonedGuarded(() {
     runApp(const WholesaleApp());
   }, (error, stack) {
-    // จับ error นอกเหนือจาก FlutterError.onError
-    // ส่ง log ได้ที่นี่
+    // TODO: log global uncaught errors
   });
 }
 
@@ -70,36 +69,27 @@ class WholesaleApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => CartProvider()),
-        // ถ้าจะให้ทั้งแอปเข้าถึง auth service:
-        // Provider<AuthService>.value(value: AuthService.instance),
       ],
       child: MaterialApp(
         title: 'Wholesale App',
         debugShowCheckedModeBanner: false,
-        theme:
-            appTheme, // ใช้ธีมโปรเจ็กต์ของคุณ (Material 3 ควรถูกตั้งใน app_theme.dart)
-
-        // หน้าเริ่มต้น
+        theme: appTheme,
         initialRoute: '/choose-login',
-
         routes: {
           '/choose-login': (_) => const ChooseLoginPage(),
 
-          // login / sign up / home
           '/login-user': (_) => const LoginUserPage(),
           '/login-admin': (_) => const LoginAdminPage(),
           '/signup': (_) => const SignUpPage(),
           '/home-user': (_) => const HomeUserPage(),
           '/home-admin': (_) => const AdminHomePage(),
 
-          // aliases (รองรับ path เดิม)
+          // aliases เดิม
           '/login/user': (_) => const LoginUserPage(),
           '/login/admin': (_) => const LoginAdminPage(),
           '/home/user': (_) => const HomeUserPage(),
           '/home/admin': (_) => const AdminHomePage(),
         },
-
-        // กัน route แปลก → กลับ choose-login
         onUnknownRoute: (_) => MaterialPageRoute(
           builder: (_) => const ChooseLoginPage(),
           settings: const RouteSettings(name: '/choose-login'),

@@ -68,11 +68,7 @@ class _OrdersTabState extends State<OrdersTab> {
       return const Center(child: Text('กรุณาเข้าสู่ระบบเพื่อดูคำสั่งซื้อ'));
     }
 
-    final stream = _fallbackNoOrder
-        ? OrderService.instance
-            .watchMyOrdersNoOrder(user.uid) // สำรอง (ไม่ orderBy)
-        : OrderService.instance
-            .watchMyOrders(user.uid); // ปกติ (where + orderBy)
+    final stream = OrderService.instance.watchMyOrders(user.uid);
 
     return Column(
       children: [

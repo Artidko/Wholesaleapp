@@ -112,7 +112,8 @@ class _OrderTrackingMapOSMState extends State<OrderTrackingMapOSM> {
         }
 
         final status = (data['status'] ?? '') as String;
-        final trackingActive = data['trackingActive'] == true;
+        final trackingActive =
+            (data['trackingActive'] == true) || (data['driverSharing'] == true);
 
         final dest = data['dest'] as Map<String, dynamic>?;
         final current = data['current'] as Map<String, dynamic>?;

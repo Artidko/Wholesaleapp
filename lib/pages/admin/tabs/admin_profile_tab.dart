@@ -211,10 +211,12 @@ class AdminProfileTab extends StatelessWidget {
                   ),
                   validator: (v) {
                     if (v == null || v.isEmpty) return 'กรุณากรอกรหัสผ่านใหม่';
-                    if (v.length < 6)
+                    if (v.length < 6) {
                       return 'รหัสผ่านควรยาวอย่างน้อย 6 ตัวอักษร';
-                    if (v == oldCtrl.text)
+                    }
+                    if (v == oldCtrl.text) {
                       return 'รหัสผ่านใหม่ต้องต่างจากรหัสเดิม';
+                    }
                     return null;
                   },
                 ),

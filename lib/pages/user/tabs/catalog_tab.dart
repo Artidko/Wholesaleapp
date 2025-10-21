@@ -258,7 +258,7 @@ class _Thumb extends StatelessWidget {
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.35),
+        color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.35),
         borderRadius: BorderRadius.circular(radius),
       ),
       child: const Icon(Icons.image, size: 20),

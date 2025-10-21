@@ -85,7 +85,7 @@ class _OrderViewPageState extends State<OrderViewPage> {
             subtitle: Text('x$qty • ฿${price.toStringAsFixed(0)}'),
             trailing: Text('฿${lineTotal.toStringAsFixed(0)}'),
           );
-        }).toList(),
+        }),
         const Divider(height: 32),
         _row('ยอดสินค้า', '฿${order.subTotal.toStringAsFixed(0)}'),
         _row('ค่าส่ง', '฿${order.shippingFee.toStringAsFixed(0)}'),

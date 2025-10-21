@@ -1,22 +1,28 @@
 // lib/pages/user/tabs/checkout_page.dart
+import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:qr_flutter/qr_flutter.dart';
-import 'package:provider/provider.dart';
 
+// Firebase
+import 'package:firebase_core/firebase_core.dart' show FirebaseException;
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+// 3rd-party
+import 'package:provider/provider.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+// Project
 import '../../../services/user_settings_service.dart';
 import '../../../models/address_item.dart';
 import '../../../models/payment_method_item.dart';
-
-// สร้างออเดอร์ + ใช้ตะกร้า
 import '../../../providers/cart_provider.dart';
 import '../../../services/order_service.dart';
-// ⬇️ ใช้หน้ารายละเอียดออเดอร์ที่ถูกต้อง
 import '../../widgets/order_view_page.dart';
 
 class CheckoutPage extends StatefulWidget {
   const CheckoutPage({super.key});
-
   @override
   State<CheckoutPage> createState() => _CheckoutPageState();
 }
@@ -25,13 +31,19 @@ class _CheckoutPageState extends State<CheckoutPage> {
   AddressItem? _selectedAddress;
   PaymentMethodItem? _selectedPayment;
 
+  // เก็บสลิปไว้ก่อน (จะอัปโหลดหลังสร้างออเดอร์)
+  Uint8List? _pendingSlipBytes;
+  String? _pendingSlipName;
+
   bool _submitting = false;
   bool get _isSignedIn => FirebaseAuth.instance.currentUser != null;
+
+  // รูป QR พร้อมเพย์ (วางไฟล์ไว้ตาม path นี้ และประกาศใน pubspec แล้ว)
+  static const String _qrAssetPath = 'assets/qr/qr_promptpay_kplus.jpg';
 
   @override
   void initState() {
     super.initState();
-    // seed วิธีชำระเงิน global ถ้ายังไม่มี
     UserSettingsService.instance.ensureGlobalPaymentMethods();
   }
 
@@ -78,7 +90,31 @@ class _CheckoutPageState extends State<CheckoutPage> {
           _PaymentSection(
             onPick: (p) => setState(() => _selectedPayment = p),
             initial: _selectedPayment,
+            onPickSlip: _pickSlip,
+            qrAssetPath: _qrAssetPath,
+            hasPendingSlip: _pendingSlipBytes != null,
           ),
+          if (_pendingSlipBytes != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.receipt_long, color: Colors.green),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'แนบสลิปรออัปโหลดหลังสร้างออเดอร์'
+                    '${_pendingSlipName != null ? ' (${_pendingSlipName})' : ''}',
+                    style: const TextStyle(fontWeight: FontWeight.w500),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => setState(() =>
+                      {_pendingSlipBytes = null, _pendingSlipName = null}),
+                  child: const Text('เอาออก'),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 24),
           FilledButton.icon(
             onPressed: canSubmit ? _submit : null,
@@ -86,78 +122,207 @@ class _CheckoutPageState extends State<CheckoutPage> {
                 ? const SizedBox(
                     height: 18,
                     width: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
+                    child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.check_circle),
-            label: Text(
-              _submitting
-                  ? 'กำลังสร้างออเดอร์...'
-                  : 'ยืนยันชำระเงินและสร้างออเดอร์',
-            ),
+            label: Text(_submitting
+                ? 'กำลังสร้างออเดอร์...'
+                : 'ยืนยันชำระเงินและสร้างออเดอร์'),
           ),
           const SizedBox(height: 12),
           if (_selectedAddress == null || _selectedPayment == null)
-            const Text(
-              'กรุณาเลือกที่อยู่จัดส่งและวิธีชำระเงิน',
-              textAlign: TextAlign.center,
-            ),
+            const Text('กรุณาเลือกที่อยู่จัดส่งและวิธีชำระเงิน',
+                textAlign: TextAlign.center),
         ],
       ),
+    );
+  }
+
+  Future<void> _pickSlip() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: false,
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return;
+
+    final f = result.files.first;
+    if (f.bytes == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ไม่สามารถอ่านไฟล์สลิปได้')),
+      );
+      return;
+    }
+    setState(() {
+      _pendingSlipBytes = f.bytes!;
+      _pendingSlipName = f.name;
+    });
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+          content: Text('เลือกสลิปแล้ว – จะอัปโหลดหลังสร้างออเดอร์')),
     );
   }
 
   Future<void> _submit() async {
     if (_selectedAddress == null || _selectedPayment == null) return;
 
-    setState(() => _submitting = true);
-    try {
-      final cart = context.read<CartProvider>();
+    final cart = context.read<CartProvider>();
+    if (cart.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ตะกร้าว่าง ไม่สามารถสร้างออเดอร์ได้')),
+      );
+      return;
+    }
 
-      // สรุปที่อยู่
+    setState(() => _submitting = true);
+
+    String? orderId;
+
+    // ---------------------- เฟสที่ 1: "สร้างออเดอร์" ----------------------
+    try {
       final a = _selectedAddress!;
       final addressText = '${a.fullName}\n'
           '${a.line1}${a.line2.isNotEmpty ? '\n${a.line2}' : ''}\n'
           '${a.city} ${a.zip}';
 
-      // สรุปวิธีชำระ
       final p = _selectedPayment!;
-      String paymentDetail;
-      switch (p.type) {
-        case PaymentType.cod:
-          paymentDetail = 'ชำระปลายทาง';
-          break;
-        case PaymentType.promptpay:
-          paymentDetail = 'พร้อมเพย์: ${p.promptPayId ?? '-'}';
-          break;
-        default:
-          paymentDetail = '';
-      }
+      final paymentDetail = switch (p.type) {
+        PaymentType.cod => 'ชำระปลายทาง',
+        PaymentType.promptpay => 'พร้อมเพย์: ${p.promptPayId ?? '-'}',
+        _ => '',
+      };
       final paymentText =
           '${p.label}${paymentDetail.isNotEmpty ? ' • $paymentDetail' : ''}';
 
-      // สร้างออเดอร์ (Service จะ clear cart ให้อยู่แล้ว)
-      final orderId = await OrderService.instance.createOrderFromCart(
-        cart: cart,
-        addressText: addressText,
-        paymentText: paymentText,
-        shippingFee: 0,
-        markPaid: true,
-      );
+      final uid = FirebaseAuth.instance.currentUser!.uid;
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get()
+          .timeout(const Duration(seconds: 10));
+      final dest =
+          (userDoc.data()?['defaultLocation'] as Map<String, dynamic>?);
+      if (dest == null || dest['lat'] == null || dest['lng'] == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('ยังไม่ได้ตั้ง “พิกัดเริ่มต้น” ในโปรไฟล์ผู้ใช้')),
+        );
+        setState(() => _submitting = false);
+        return;
+      }
 
+      final destLat = (dest['lat'] as num).toDouble();
+      final destLng = (dest['lng'] as num).toDouble();
+      final markPaidNow = p.type == PaymentType.cod;
+
+      orderId = await OrderService.instance
+          .createOrderFromCart(
+            cart: cart,
+            addressText: addressText,
+            paymentText: paymentText,
+            destLat: destLat,
+            destLng: destLng,
+            shippingFee: 0,
+            markPaid: markPaidNow,
+          )
+          .timeout(const Duration(seconds: 20));
+    } on FirebaseException catch (e) {
       if (!mounted) return;
-
-      // ไปหน้าแสดงรายละเอียดออเดอร์เลย เพื่อลดโอกาส crash ระหว่างทาง
-      await Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => OrderViewPage(orderId: orderId)),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('สร้างออเดอร์ล้มเหลว (${e.code}): ${e.message}')),
       );
+      setState(() => _submitting = false);
+      return; // ❌ จบที่นี่เพราะสร้างออเดอร์ไม่สำเร็จ
+    } on TimeoutException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('เครือข่ายช้า: สร้างออเดอร์เกินเวลา กรุณาลองใหม่')),
+      );
+      setState(() => _submitting = false);
+      return;
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('สร้างออเดอร์ไม่สำเร็จ: $e')),
       );
-    } finally {
-      if (mounted) setState(() => _submitting = false);
+      setState(() => _submitting = false);
+      return;
     }
+
+    // ---------------------- เฟสที่ 2: "อัปโหลดสลิป" (ไม่บล็อกออเดอร์) ----------------------
+    try {
+      final p = _selectedPayment!;
+      if (p.type == PaymentType.promptpay && _pendingSlipBytes != null) {
+        final uid = FirebaseAuth.instance.currentUser!.uid;
+        await _uploadSlipToSupabase(orderId!, uid, _pendingSlipBytes!);
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('แนบสลิปเรียบร้อย รอแอดมินตรวจสอบ')),
+          );
+        }
+      }
+    } catch (e) {
+      // ไม่ถือว่า fail ของออเดอร์—แค่แจ้งเตือนว่าแนบสลิปไม่สำเร็จ
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('ออเดอร์ถูกสร้างแล้ว แต่แนบสลิปไม่สำเร็จ: $e'),
+          ),
+        );
+      }
+    }
+
+    // ---------------------- ไปหน้ารายละเอียดออเดอร์ ----------------------
+    if (!mounted) return;
+    setState(() => _submitting = false);
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => OrderViewPage(orderId: orderId!)),
+    );
+  }
+
+  /// อัปโหลดสลิปขึ้น Supabase + อัปเดตฟิลด์ payment ใน Firestore
+  Future<void> _uploadSlipToSupabase(
+    String orderId,
+    String uid,
+    Uint8List bytes,
+  ) async {
+    final supabase = Supabase.instance.client;
+    const bucket = 'slips';
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final path = 'orders/$orderId/slips/${uid}_$ts.jpg';
+
+    // อัปโหลดไป Supabase (บัคเก็ตต้อง Public หรือมีนโยบายอ่านได้)
+    await supabase.storage.from(bucket).uploadBinary(
+          path,
+          bytes,
+          fileOptions: const FileOptions(
+            contentType: 'image/jpeg',
+            upsert: true,
+          ),
+        );
+
+    final slipUrl = supabase.storage.from(bucket).getPublicUrl(path);
+
+    await FirebaseFirestore.instance.collection('orders').doc(orderId).set({
+      'payment': {
+        'method': 'promptpay',
+        'slipUrl': slipUrl,
+        'submittedBy': uid,
+        'submittedAt': FieldValue.serverTimestamp(),
+        'reviewStatus': 'pending', // pending | approved | rejected
+        'storage': 'supabase',
+        'bucket': bucket,
+        'path': path,
+      },
+      'statusClientNote': 'ส่งสลิปแล้ว รอแอดมินตรวจสอบ',
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 }
 
@@ -166,11 +331,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
 class _AddressSection extends StatelessWidget {
   final AddressItem? initial;
   final ValueChanged<AddressItem> onPick;
-
-  const _AddressSection({
-    required this.onPick,
-    this.initial,
-  });
+  const _AddressSection({required this.onPick, this.initial});
 
   @override
   Widget build(BuildContext context) {
@@ -179,9 +340,8 @@ class _AddressSection extends StatelessWidget {
         stream: UserSettingsService.instance.addressesStream(),
         initialData: const [],
         builder: (context, snap) {
-          if (snap.hasError) {
+          if (snap.hasError)
             return _SectionError('ที่อยู่จัดส่ง', snap.error.toString());
-          }
           if (snap.connectionState == ConnectionState.waiting) {
             return _SectionLoading('ที่อยู่จัดส่ง');
           }
@@ -197,8 +357,6 @@ class _AddressSection extends StatelessWidget {
           }
 
           final selected = _pickInitialAddress(items, initial);
-
-          // แจ้ง parent ครั้งแรกเท่านั้น
           if (initial == null) {
             WidgetsBinding.instance
                 .addPostFrameCallback((_) => onPick(selected));
@@ -258,9 +416,16 @@ class _PaymentSection extends StatelessWidget {
   final PaymentMethodItem? initial;
   final ValueChanged<PaymentMethodItem> onPick;
 
+  final VoidCallback onPickSlip;
+  final String qrAssetPath;
+  final bool hasPendingSlip;
+
   const _PaymentSection({
     required this.onPick,
     this.initial,
+    required this.onPickSlip,
+    required this.qrAssetPath,
+    required this.hasPendingSlip,
   });
 
   @override
@@ -290,7 +455,6 @@ class _PaymentSection extends StatelessWidget {
           }
 
           final selected = _pickInitialPayment(items, initial);
-
           if (initial == null) {
             WidgetsBinding.instance
                 .addPostFrameCallback((_) => onPick(selected));
@@ -300,7 +464,13 @@ class _PaymentSection extends StatelessWidget {
             title: 'เลือกวิธีการชำระเงิน',
             trailingText: 'เปลี่ยน',
             onTrailing: () => _openPicker(context, items),
-            child: _PaymentSummary(selected: selected),
+            child: _PaymentSummary(
+              selected: selected,
+              onShowQr: () => _showPromptPayQR(context, selected),
+              hasPendingSlip: hasPendingSlip,
+              onPickSlip: onPickSlip,
+              qrAssetPath: qrAssetPath,
+            ),
           );
         },
       ),
@@ -364,11 +534,100 @@ class _PaymentSection extends StatelessWidget {
         return null;
     }
   }
+
+  void _showPromptPayQR(BuildContext context, PaymentMethodItem p) {
+    if (p.type != PaymentType.promptpay) return;
+
+    final id = p.promptPayId ?? '';
+
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) {
+        final mq = MediaQuery.of(ctx);
+        final maxImgHeight = mq.size.height * 0.55;
+
+        return SafeArea(
+          child: DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.8,
+            minChildSize: 0.5,
+            maxChildSize: 0.95,
+            builder: (_, scrollController) => SingleChildScrollView(
+              controller: scrollController,
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.qr_code_2),
+                    title: const Text('QR พร้อมเพย์'),
+                    subtitle: Text('ปลายทาง: $id'),
+                  ),
+                  const SizedBox(height: 12),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: maxImgHeight,
+                      maxWidth: mq.size.width,
+                    ),
+                    child: AspectRatio(
+                      aspectRatio: 3 / 4,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.asset(qrAssetPath, fit: BoxFit.contain),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('หลังสแกน กรุณาแนบสลิปเพื่อให้แอดมินตรวจสอบ',
+                      textAlign: TextAlign.center),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: onPickSlip,
+                          icon: const Icon(Icons.attach_file),
+                          label: const Text('เลือกสลิปโอนเงิน'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  if (hasPendingSlip)
+                    const Row(
+                      children: [
+                        Icon(Icons.check_circle, color: Colors.green),
+                        SizedBox(width: 6),
+                        Text('เลือกสลิปแล้ว (จะอัปโหลดหลังสร้างออเดอร์)'),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
 
 class _PaymentSummary extends StatelessWidget {
   final PaymentMethodItem selected;
-  const _PaymentSummary({required this.selected});
+  final VoidCallback onShowQr;
+  final VoidCallback onPickSlip;
+  final bool hasPendingSlip;
+  final String qrAssetPath;
+
+  const _PaymentSummary({
+    required this.selected,
+    required this.onShowQr,
+    required this.onPickSlip,
+    required this.hasPendingSlip,
+    required this.qrAssetPath,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -405,55 +664,30 @@ class _PaymentSummary extends StatelessWidget {
         const SizedBox(height: 6),
         Text(detail, style: Theme.of(context).textTheme.bodySmall),
         if (selected.type == PaymentType.promptpay) ...[
-          const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              icon: const Icon(Icons.qr_code_2),
-              label: const Text('ดู QR พร้อมเพย์'),
-              onPressed: () => _showPromptPayQR(context, selected),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  void _showPromptPayQR(BuildContext context, PaymentMethodItem p) {
-    final id = p.promptPayId ?? '';
-    final data = 'PROMPTPAY:$id';
-
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              ListTile(
-                leading: const Icon(Icons.qr_code_2),
-                title: const Text('QR พร้อมเพย์'),
-                subtitle: Text('ปลายทาง: $id'),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.qr_code_2),
+                label: const Text('ดู QR พร้อมเพย์'),
+                onPressed: onShowQr,
               ),
-              const SizedBox(height: 12),
-              Center(
-                child: QrImageView(
-                  data: data,
-                  size: 220,
-                  gapless: true,
-                ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.attach_file),
+                label:
+                    Text(hasPendingSlip ? 'เลือกสลิปแล้ว' : 'เลือกสลิปไว้ก่อน'),
+                onPressed: onPickSlip,
               ),
-              const SizedBox(height: 12),
-              const Text(
-                  'หลังสแกน กรุณาส่งหลักฐานการโอน / สลิป หากระบบต้องการ'),
-              const SizedBox(height: 8),
             ],
           ),
-        ),
-      ),
+          const SizedBox(height: 4),
+          if (hasPendingSlip)
+            const Text('หมายเหตุ: จะอัปโหลดอัตโนมัติหลังสร้างออเดอร์',
+                style: TextStyle(fontSize: 12)),
+        ],
+      ],
     );
   }
 }

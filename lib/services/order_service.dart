@@ -13,7 +13,7 @@ class OrderService {
   CollectionReference<Map<String, dynamic>> get _orders =>
       _db.collection('orders');
 
-  /// ---------- Helpers ----------
+  /* =================== Helpers =================== */
   OrderStatus _fromStr(String s) {
     try {
       return OrderStatus.values.byName(s);
@@ -23,7 +23,7 @@ class OrderService {
   }
 
   bool _isValidTransition(OrderStatus from, OrderStatus to) {
-    // Flow: pending -> paid -> preparing -> delivering -> completed (+ cancelled branch)
+    // Flow: pending -> paid -> preparing -> delivering -> completed (+ cancelled)
     return switch ((from, to)) {
       (OrderStatus.pending, OrderStatus.paid) ||
       (OrderStatus.pending, OrderStatus.cancelled) ||
@@ -37,19 +37,25 @@ class OrderService {
     };
   }
 
-  /// ---------- Create ----------
+  /* =================== Create =================== */
+  /// ต้องส่ง destLat/destLng ด้วย และ **ต้องมี userId** ให้ผ่านกฎ Firestore
   Future<String> createOrderFromCart({
     required CartProvider cart,
     required String addressText,
     required String paymentText,
+    required double destLat,
+    required double destLng,
     num shippingFee = 0,
-    bool markPaid = true, // ถ้าจ่ายสำเร็จแล้ว
+    bool markPaid = true, // COD = true, PromptPay = false
   }) async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) throw Exception('ต้องล็อกอินก่อนทำรายการสั่งซื้อ');
-    if (cart.isEmpty) throw Exception('ตะกร้าว่าง ไม่สามารถสร้างออเดอร์ได้');
+    if (user == null) {
+      throw Exception('ต้องล็อกอินก่อนทำรายการสั่งซื้อ');
+    }
+    if (cart.isEmpty) {
+      throw Exception('ตะกร้าว่าง ไม่สามารถสร้างออเดอร์ได้');
+    }
 
-    // map cart -> order lines
     final lines = cart.lines.map((l) {
       final p = l.product;
       return OrderLine(
@@ -65,11 +71,10 @@ class OrderService {
     final grandTotal = subTotal + shippingFee;
     final initialStatus = markPaid ? OrderStatus.paid : OrderStatus.pending;
 
-    // จองไอดีเอกสารก่อน แล้ว set ครั้งเดียวให้ครบ (เลี่ยง permission update)
-    final ref = _orders.doc();
-    final payload = {
-      'id': ref.id, // ใส่ id ตั้งแต่แรก
-      'userId': user.uid,
+    final ref = _orders.doc(); // สร้าง id ล่วงหน้า
+    final data = {
+      'id': ref.id,
+      'userId': user.uid, // <<< สำคัญ
       'lines': lines.map((e) => e.toMap()).toList(),
       'subTotal': subTotal,
       'shippingFee': shippingFee,
@@ -79,45 +84,37 @@ class OrderService {
       'status': initialStatus.name,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
-      // ห้ามใช้ FieldValue.serverTimestamp() ใน array -> ใช้ Timestamp.now()
+      'dest': {'lat': destLat, 'lng': destLng},
+      'trackingActive': false,
       'timeline': [
-        {'status': initialStatus.name, 'at': Timestamp.now()}
+        {'status': initialStatus.name, 'at': Timestamp.now()},
       ],
+      // ให้ว่างไว้ก่อน ลูกค้าจะมาแนบสลิปทีหลัง
+      'payment': null,
+      'statusClientNote': null,
     };
 
-    await ref.set(payload);
+    await ref.set(data);
     cart.clear();
     return ref.id;
   }
 
-  /// ---------- Read ----------
+  /* =================== Read =================== */
   Future<OrderModel> getOrder(String orderId) async {
     final doc = await _orders.doc(orderId).get();
     if (!doc.exists) throw Exception('ไม่พบคำสั่งซื้อ');
     return OrderModel.fromDoc(doc);
   }
 
-  /// สตรีมออเดอร์เดียว (ใช้ในหน้าแผนที่/ติดตาม)
-  Stream<OrderModel> watchOrder(String orderId) {
-    return _orders.doc(orderId).snapshots().map((d) => OrderModel.fromDoc(d));
-  }
+  Stream<OrderModel> watchOrder(String orderId) =>
+      _orders.doc(orderId).snapshots().map(OrderModel.fromDoc);
 
-  Stream<List<OrderModel>> watchMyOrders(String userId) {
-    return _orders
-        .where('userId', isEqualTo: userId)
-        .orderBy('createdAt', descending: true)
-        .snapshots()
-        .map((s) => s.docs.map(OrderModel.fromDoc).toList());
-  }
+  Stream<List<OrderModel>> watchMyOrders(String userId) => _orders
+      .where('userId', isEqualTo: userId)
+      .orderBy('createdAt', descending: true)
+      .snapshots()
+      .map((s) => s.docs.map(OrderModel.fromDoc).toList());
 
-  Stream<List<OrderModel>> watchMyOrdersNoOrder(String userId) {
-    return _orders
-        .where('userId', isEqualTo: userId)
-        .snapshots()
-        .map((s) => s.docs.map(OrderModel.fromDoc).toList());
-  }
-
-  /// สำหรับแอดมิน: ดูทั้งหมด (กรองสถานะได้)
   Stream<List<OrderModel>> watchAll({OrderStatus? status}) {
     Query<Map<String, dynamic>> q =
         _orders.orderBy('createdAt', descending: true);
@@ -125,18 +122,7 @@ class OrderService {
     return q.snapshots().map((s) => s.docs.map(OrderModel.fromDoc).toList());
   }
 
-  /// ผู้ใช้: ดึงเฉพาะสถานะที่ต้องการ
-  Stream<List<OrderModel>> watchMyByStatus(String userId, OrderStatus status) {
-    return _orders
-        .where('userId', isEqualTo: userId)
-        .where('status', isEqualTo: status.name)
-        .orderBy('createdAt', descending: true)
-        .snapshots()
-        .map((s) => s.docs.map(OrderModel.fromDoc).toList());
-  }
-
-  /// ---------- Update ----------
-  /// อัปเดตสถานะ (เพิ่มโหมด force สำหรับแอดมิน)
+  /* =================== Update (status) =================== */
   Future<void> updateStatus(
     String orderId,
     OrderStatus to, {
@@ -144,49 +130,41 @@ class OrderService {
     bool force = false,
   }) async {
     final ref = _orders.doc(orderId);
-
     await _db.runTransaction((tx) async {
       final snap = await tx.get(ref);
       if (!snap.exists) throw Exception('ไม่พบคำสั่งซื้อ');
 
       final data = snap.data()!;
       final cur = _fromStr((data['status'] ?? 'pending').toString());
-
       if (!force && !_isValidTransition(cur, to)) {
         throw Exception('เปลี่ยนสถานะไม่ได้: ${cur.name} → ${to.name}');
       }
 
-      // อัปเดตสถานะ + เวลา (ใช้ serverTimestamp ได้ที่ฟิลด์บนสุด)
       tx.update(ref, {
         'status': to.name,
         'updatedAt': FieldValue.serverTimestamp(),
         if (to == OrderStatus.cancelled) 'cancelReason': cancelReason ?? '—',
       });
 
-      // timeline: หลีกเลี่ยง serverTimestamp ใน array
       final timeline = (data['timeline'] as List?) ?? [];
       timeline.add({'status': to.name, 'at': Timestamp.now()});
       tx.update(ref, {'timeline': timeline});
     });
   }
 
-  /// เมธอดลัดสำหรับหลังบ้าน (บังคับเปลี่ยนสถานะได้ทุกแบบ)
   Future<void> adminUpdateStatus(
     String orderId,
     OrderStatus to, {
     String? cancelReason,
-  }) {
-    return updateStatus(orderId, to, cancelReason: cancelReason, force: true);
-  }
+  }) =>
+      updateStatus(orderId, to, cancelReason: cancelReason, force: true);
 
-  /// ผู้ใช้ยกเลิกออเดอร์ตัวเอง (ได้เฉพาะสถานะ early)
   Future<void> cancelMyOrder(
     String orderId,
     String userId, {
     String reason = 'ผู้ใช้ยกเลิก',
   }) async {
     final ref = _orders.doc(orderId);
-
     await _db.runTransaction((tx) async {
       final snap = await tx.get(ref);
       if (!snap.exists) throw Exception('ไม่พบคำสั่งซื้อ');
@@ -217,9 +195,46 @@ class OrderService {
     });
   }
 
-  // ---------- Rider/Driver helpers (ใหม่) ----------
+  /* =================== Payment helpers =================== */
+  /// ลูกค้าแนบสลิป: อัปเดตเฉพาะคีย์ที่กฎอนุญาต (payment + statusClientNote)
+  Future<void> attachPaymentSlip({
+    required String orderId,
+    required String slipUrl,
+    required String note, // ข้อความแจ้งลูกค้า
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser!.uid;
+    await _orders.doc(orderId).set({
+      'payment': {
+        'method': 'promptpay',
+        'slipUrl': slipUrl,
+        'submittedBy': uid,
+        'submittedAt': FieldValue.serverTimestamp(),
+        'reviewStatus': 'pending',
+      },
+      'statusClientNote': note,
+    }, SetOptions(merge: true));
+  }
 
-  /// ตั้งคนขับของออเดอร์ (ใช้ตอนแอดมิน/ไรเดอร์เริ่มแชร์)
+  /// แอดมินอนุมัติ/ปฏิเสธสลิป
+  Future<void> adminReviewSlip({
+    required String orderId,
+    required bool approve,
+    String? rejectReason,
+    bool setPaidWhenApprove = true,
+  }) async {
+    final updates = <String, dynamic>{
+      'payment.reviewStatus': approve ? 'approved' : 'rejected',
+      'updatedAt': FieldValue.serverTimestamp(),
+      if (!approve) 'statusClientNote': rejectReason ?? 'แอดมินปฏิเสธสลิป',
+    };
+    if (approve && setPaidWhenApprove) {
+      updates['status'] = 'paid';
+      // (จะไม่ตรวจ flow เพราะฝั่งแอดมินมีสิทธิ์เต็มอยู่แล้ว)
+    }
+    await _orders.doc(orderId).update(updates);
+  }
+
+  /* =================== Driver helpers =================== */
   Future<void> setDriver(String orderId, String driverId) async {
     await _orders.doc(orderId).set({
       'driverId': driverId,
@@ -227,31 +242,39 @@ class OrderService {
     }, SetOptions(merge: true));
   }
 
-  /// เปิด/ปิดแฟลกการแชร์พิกัด
-  Future<void> setRiderTracking(String orderId, bool enabled) async {
+  Future<void> setTrackingActive(
+    String orderId,
+    bool active, {
+    String? sessionId,
+  }) async {
     await _orders.doc(orderId).set({
-      'rider': {
-        'trackingEnabled': enabled,
-        'startedAt': enabled ? FieldValue.serverTimestamp() : null,
-      }
+      'trackingActive': active,
+      if (sessionId != null) 'current': {'sessionId': sessionId},
+      'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
 
-  /// อัปเดตตำแหน่งไรเดอร์ปัจจุบัน
-  Future<void> updateRiderLocation(
-      String orderId, double lat, double lng) async {
+  Future<void> updateCurrentLocation(
+    String orderId, {
+    required double lat,
+    required double lng,
+    double? speed,
+    double? heading,
+    double? acc,
+  }) async {
     await _orders.doc(orderId).set({
-      'rider': {
-        'location': {
-          'lat': lat,
-          'lng': lng,
-          'updatedAt': FieldValue.serverTimestamp(),
-        }
-      }
+      'current': {
+        'lat': lat,
+        'lng': lng,
+        if (speed != null) 'speed': speed,
+        if (heading != null) 'heading': heading,
+        if (acc != null) 'acc': acc,
+        'ts': FieldValue.serverTimestamp(),
+      },
+      'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
 
-  /// ดูเฉพาะบล็อก rider แบบสตรีม (ใช้ตรวจว่ามีพิกัด/กำลังแชร์หรือไม่)
   Stream<Map<String, dynamic>?> watchRider(String orderId) {
     return _orders.doc(orderId).snapshots().map((d) {
       final data = d.data();

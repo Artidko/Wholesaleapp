@@ -1,5 +1,6 @@
 // lib/pages/admin/tabs/admin_orders_tab.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
@@ -61,7 +62,6 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
     final selectedStatus =
         selected == 'ทั้งหมด' ? null : statusFromThai(selected);
 
-    // ---- Header: ไอคอนเล็ก + ข้อความ + ระยะหายใจ ----
     final header = Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
       child: Row(
@@ -80,7 +80,6 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
       ),
     );
 
-    // ---- Filter bar: OutlinedButton มน 8px ใน Material elevation 1 ----
     final filterBar = Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
       child: Material(
@@ -156,11 +155,11 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
                   final sc = statusColor(o.status);
 
                   return Card(
-                    elevation: 0, // ไม่ใส่เงาหนัก การ์ดดูเนียน
+                    elevation: 0,
                     color: theme.colorScheme.surface,
                     surfaceTintColor: Colors.transparent,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10), // การ์ด 10px
+                      borderRadius: BorderRadius.circular(10),
                       side: BorderSide(color: Colors.grey.shade200),
                     ),
                     child: InkWell(
@@ -177,8 +176,7 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
                             height: 44,
                             decoration: BoxDecoration(
                               color: sc.withOpacity(.08),
-                              borderRadius:
-                                  BorderRadius.circular(8), // รูป/ไอคอน 8px
+                              borderRadius: BorderRadius.circular(8),
                             ),
                             child: Icon(Icons.receipt_long, color: sc),
                           ),
@@ -193,7 +191,6 @@ class _AdminOrdersTabState extends State<AdminOrdersTab> {
                                       ?.copyWith(fontWeight: FontWeight.w700),
                                 ),
                               ),
-                              // ราคาเป็นแคปซูลโทน primary จาง ๆ
                               Container(
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 8, vertical: 4),
@@ -353,7 +350,7 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         ClipRRect(
-          borderRadius: BorderRadius.circular(8), // รูปโค้ง 8px
+          borderRadius: BorderRadius.circular(8),
           child: l.imageUrl.isNotEmpty
               ? Image.network(l.imageUrl,
                   width: 48, height: 48, fit: BoxFit.cover)
@@ -382,6 +379,145 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
     );
   }
 
+  // ---------- แสดงสลิปโอนเงิน ----------
+  Widget _paymentSlipSection(String orderId) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('orders')
+          .doc(orderId)
+          .snapshots(),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Row(
+              children: [
+                SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2)),
+                SizedBox(width: 8),
+                Text('กำลังโหลดสลิป…'),
+              ],
+            ),
+          );
+        }
+        if (!snap.hasData || !snap.data!.exists) {
+          return const Text('ไม่พบข้อมูลออเดอร์');
+        }
+
+        final data = snap.data!.data()!;
+        final pay = (data['payment'] ?? {}) as Map<String, dynamic>;
+        final slipUrl = (pay['slipUrl'] ?? '') as String;
+        final review = (pay['reviewStatus'] ?? 'pending') as String;
+
+        Color chipColor() {
+          switch (review) {
+            case 'approved':
+              return Colors.green;
+            case 'rejected':
+              return Colors.red;
+            case 'pending':
+            default:
+              return Colors.orange;
+          }
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.receipt_long, size: 16),
+                const SizedBox(width: 6),
+                const Text('สลิปการโอน',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
+                const Spacer(),
+                Chip(
+                  label: Text(review),
+                  backgroundColor: chipColor().withOpacity(.12),
+                  side: BorderSide(color: chipColor()),
+                  labelStyle: TextStyle(color: chipColor()),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (slipUrl.isEmpty)
+              const Text('ลูกค้ายังไม่แนบสลิป',
+                  style: TextStyle(color: Colors.black54))
+            else ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: AspectRatio(
+                  aspectRatio: 3 / 4,
+                  child: InkWell(
+                    onTap: () => _showFullScreenSlip(slipUrl),
+                    child: Image.network(
+                      slipUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        color: const Color(0xfff2f2f2),
+                        alignment: Alignment.center,
+                        child: const Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.broken_image_outlined,
+                                color: Colors.grey),
+                            SizedBox(height: 6),
+                            Text('โหลดรูปไม่สำเร็จ',
+                                style: TextStyle(color: Colors.black54)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.open_in_new),
+                    label: const Text('เปิดเต็มจอ'),
+                    onPressed: () => _showFullScreenSlip(slipUrl),
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.link),
+                    label: const Text('คัดลอกลิงก์'),
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: slipUrl));
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('คัดลอกลิงก์แล้ว')),
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  void _showFullScreenSlip(String url) {
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        insetPadding: const EdgeInsets.all(12),
+        child: InteractiveViewer(
+          minScale: .5,
+          maxScale: 5,
+          child: Image.network(url, fit: BoxFit.contain),
+        ),
+      ),
+    );
+  }
+
+  // ---------- แชร์ตำแหน่ง ----------
   Future<void> _assignMeAsDriver(String orderId) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) throw 'ยังไม่ได้เข้าสู่ระบบ';
@@ -394,13 +530,20 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
   Future<void> _startShare() async {
     final id = widget.order.id;
     await _assignMeAsDriver(id);
+    final sessionId = DateTime.now().millisecondsSinceEpoch.toString();
+
     await FirebaseFirestore.instance.collection('orders').doc(id).set({
-      'driverSharing': true,
+      'trackingActive': true,
+      'current': {
+        'sessionId': sessionId,
+        'ts': FieldValue.serverTimestamp(),
+      },
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
     try {
-      await DriverLocationService.instance.startTrackingOrder(id);
+      await DriverLocationService.instance
+          .startTrackingOrder(id, sessionId: sessionId);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('เริ่มแชร์ตำแหน่งแล้ว')),
@@ -408,7 +551,7 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
       }
     } catch (e) {
       await FirebaseFirestore.instance.collection('orders').doc(id).set({
-        'driverSharing': false,
+        'trackingActive': false,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
       if (mounted) {
@@ -421,10 +564,10 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
   Future<void> _stopShare() async {
     final id = widget.order.id;
     try {
-      DriverLocationService.instance.stop();
+      await DriverLocationService.instance.stop();
     } finally {
       await FirebaseFirestore.instance.collection('orders').doc(id).set({
-        'driverSharing': false,
+        'trackingActive': false,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     }
@@ -453,7 +596,6 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // หัวเรื่องใบสั่งซื้อ + ราคาเป็นแคปซูล primary จางๆ
               Row(
                 children: [
                   Expanded(
@@ -492,9 +634,8 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
                 separatorBuilder: (_, __) => const SizedBox(height: 8),
                 itemBuilder: (_, i) => _lineTile(o.lines[i]),
               ),
-              const SizedBox(height: 12),
 
-              // กล่องสรุปยอด: มน 12 ขอบจาง ๆ
+              const SizedBox(height: 12),
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -512,6 +653,11 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
                   ],
                 ),
               ),
+
+              // ✅ แทรก Section สลิปโอนเงิน
+              const SizedBox(height: 12),
+              _secHeader(Icons.receipt_long, 'การชำระเงิน / สลิป'),
+              _paymentSlipSection(o.id),
               const SizedBox(height: 12),
 
               if (widget.allowedNext.isEmpty)
@@ -525,11 +671,9 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
                   children: _buildStatusChips(context),
                 ),
               ],
-
               const SizedBox(height: 12),
               const Divider(),
 
-              // แชร์ตำแหน่งไรเดอร์: ปุ่มคู่วางในแถว
               _secHeader(Icons.location_searching, 'แชร์ตำแหน่งผู้ส่ง'),
               StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
                 stream: FirebaseFirestore.instance
@@ -538,7 +682,7 @@ class _AdminOrderDetailState extends State<_AdminOrderDetail> {
                     .snapshots(),
                 builder: (context, snap) {
                   final data = snap.data?.data();
-                  final sharing = (data?['driverSharing'] == true);
+                  final sharing = (data?['trackingActive'] == true);
                   final canStart =
                       o.status == OrderStatus.delivering && !sharing;
 
